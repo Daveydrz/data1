@@ -808,19 +808,24 @@ class ThirdPersonPetTemplate(Template):
 class FirstPersonRareEntityTypesTemplate(Template):
     def generate(self):
         # Target any potentially missing entity types
-        amount = random.choice(["2.5 hours", "45 minutes", "3 hours daily"])
+        # Add missing entity types
+        amount = random.choice(["$500", "50 items", "75%", "3.2 million", "150 pounds"])
+        industry = random.choice(["healthcare", "technology", "retail", "manufacturing", "finance"])
         time = random.choice(["7:30 AM", "2:15 PM", "9:45 PM"])
         budget = random.choice(["monthly budget", "annual budget", "project budget"])
         timeline = random.choice(["6-month timeline", "annual timeline", "5-year timeline"])
         
-        text = f"At {time}, I allocate {amount} to my {budget} planning, following a {timeline} for my goals."
+        # Update text template
+        text = f"At {time}, I allocate {amount} to my {budget} planning in the {industry} industry, following a {timeline} for my goals."
         
         entities = {
             "user": (EntityTypes.PRONOUN, "I"),
             "time1": (EntityTypes.TIME, time),
-            "amount1": (EntityTypes.DURATION, amount),
+            "amount1": (EntityTypes.AMOUNT, amount),
             "budget1": (EntityTypes.BUDGET, budget),
-            "timeline1": (EntityTypes.TIMELINE, timeline)
+            "timeline1": (EntityTypes.TIMELINE, timeline),
+            # Add to entities dictionary
+            "industry1": (EntityTypes.INDUSTRY, industry)
         }
         
         relations = [
