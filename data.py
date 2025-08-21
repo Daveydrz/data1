@@ -4364,10 +4364,10 @@ def print_statistics(stats: Dict):
 class BalancedTemplateManager:
     """Manages template usage tracking for perfectly balanced dataset generation."""
     
-    # Mandatory Progressive Quota System
-    MINIMUM_QUOTA_PER_TYPE = 5  # Every type gets at least 5 occurrences
-    TARGET_QUOTA_PER_TYPE = 8   # Target for balanced distribution  
-    MAXIMUM_QUOTA_PER_TYPE = 20 # Hard cap to prevent overrepresentation (increased for small datasets)
+    # Mandatory Progressive Quota System (adjusted for dataset size)
+    MINIMUM_QUOTA_PER_TYPE = 5   # Every type gets at least 5 occurrences
+    TARGET_QUOTA_PER_TYPE = 10   # Target for balanced distribution  
+    MAXIMUM_QUOTA_PER_TYPE = 30  # Hard cap to prevent overrepresentation
     
     def __init__(self, first_person_templates: List, third_person_templates: List):
         self.first_person_templates = first_person_templates
@@ -4652,54 +4652,48 @@ class BalancedTemplateManager:
             else:
                 current_phase = "balanced_distribution"
         
-        # Filter templates based on quota constraints
-        eligible_templates = []
-        for template_class in templates:
-            if self.can_use_template(template_class, perspective or "first_person"):
-                eligible_templates.append(template_class)
-        
-        if not eligible_templates:
-            # If no templates are eligible (all would exceed quotas), 
-            # fall back to least used template
-            print(f"⚠️  No eligible templates found, falling back to least used")
-            return self.get_least_used_template(perspective)
-        
-        # Score templates based on current phase
+        # Score ALL templates (don't pre-filter), but make scoring very decisive
         template_scores = {}
         
         if current_phase == "coverage":
-            # Phase 1: ONLY templates producing types <5 occurrences are eligible
+            # Phase 1: ONLY templates producing types <5 occurrences get good scores
             print(f"📍 Phase 1 (Coverage): Seeking {len(entities_needing_min)} entities, {len(relations_needing_min)} relations needing minimum quota")
             
-            for template_class in eligible_templates:
+            for template_class in templates:
                 score = self._score_template_for_coverage(template_class, entities_needing_min, relations_needing_min, perspective)
                 template_scores[template_class] = score
                 
         elif current_phase == "minimum_quotas":
-            # Phase 2: ONLY templates producing types <8 occurrences are eligible
+            # Phase 2: ONLY templates producing types <8 occurrences get good scores
             print(f"📍 Phase 2 (Minimum Quotas): Seeking {len(entities_needing_target)} entities, {len(relations_needing_target)} relations needing target quota")
             
-            for template_class in eligible_templates:
+            for template_class in templates:
                 score = self._score_template_for_minimum_quotas(template_class, entities_needing_target, relations_needing_target, perspective)
                 template_scores[template_class] = score
                 
         else:
-            # Phase 3: ONLY templates producing types <12 occurrences are eligible
-            print(f"📍 Phase 3 (Balanced Distribution): Filling remaining slots evenly")
+            # Phase 3: Balanced distribution with strict limits
+            print(f"📍 Phase 3 (Balanced Distribution): Enforcing strict balance")
             
-            for template_class in eligible_templates:
+            for template_class in templates:
                 score = self._score_template_for_balanced_distribution(template_class, perspective)
                 template_scores[template_class] = score
         
         # Select template with highest score
         if template_scores:
+            # Get best scoring templates
             max_score = max(template_scores.values())
-            if max_score <= 0:
-                # If all scores are 0 or negative, fall back to least used
-                return self.get_least_used_template(perspective)
+            best_templates = [t for t, s in template_scores.items() if s == max_score]
             
-            best_template = max(template_scores.keys(), key=lambda t: template_scores[t])
-            return best_template
+            if max_score > 0:
+                # If we have templates with positive scores, use the best one
+                return random.choice(best_templates)
+            else:
+                # If all scores are 0 or negative, find least harmful template
+                print(f"⚠️  All templates scored poorly, selecting least harmful")
+                least_harmful_score = max(template_scores.values())
+                least_harmful_templates = [t for t, s in template_scores.items() if s == least_harmful_score]
+                return random.choice(least_harmful_templates)
         else:
             return self.get_least_used_template(perspective)
     
@@ -4711,24 +4705,32 @@ class BalancedTemplateManager:
             
             score = 0
             
-            # High score for producing entities that need minimum quota
+            # Very high score for producing entities that need minimum quota
             for _, (entity_type, _) in entities_meta.items():
                 if entity_type in entities_needing_min:
-                    score += 1000  # Very high priority for uncovered/under-minimum types
+                    score += 10000  # Massive priority for uncovered/under-minimum types
+                else:
+                    current_usage = self.entity_type_usage.get(entity_type, 0)
+                    if current_usage >= self.MAXIMUM_QUOTA_PER_TYPE:
+                        score -= 5000  # Big penalty for overrepresented types
             
-            # High score for producing relations that need minimum quota
+            # Very high score for producing relations that need minimum quota
             for rel_type, _, _ in relations_meta:
                 if rel_type in relations_needing_min:
-                    score += 1000  # Very high priority for uncovered/under-minimum types
+                    score += 10000  # Massive priority for uncovered/under-minimum types
+                else:
+                    current_usage = self.relation_type_usage.get(rel_type, 0)
+                    if current_usage >= self.MAXIMUM_QUOTA_PER_TYPE:
+                        score -= 5000  # Big penalty for overrepresented types
             
-            # Penalty for templates that don't produce needed types
-            if score == 0:
-                score = 1  # Low score but not zero
+            # If template doesn't produce any needed types, penalize it heavily
+            if score <= 0:
+                score = -1000  # Negative score for unhelpful templates
             
             return score
             
         except Exception:
-            return 0
+            return -10000  # Very negative score for failed templates
     
     def _score_template_for_minimum_quotas(self, template_class, entities_needing_target, relations_needing_target, perspective):
         """Score template for minimum quotas phase - prioritize templates that produce types needing target quota."""
@@ -4741,21 +4743,29 @@ class BalancedTemplateManager:
             # High score for producing entities that need target quota
             for _, (entity_type, _) in entities_meta.items():
                 if entity_type in entities_needing_target:
-                    score += 500  # High priority for types needing target quota
+                    score += 5000  # High priority for types needing target quota
+                else:
+                    current_usage = self.entity_type_usage.get(entity_type, 0)
+                    if current_usage >= self.MAXIMUM_QUOTA_PER_TYPE:
+                        score -= 3000  # Penalty for overrepresented types
             
             # High score for producing relations that need target quota
             for rel_type, _, _ in relations_meta:
                 if rel_type in relations_needing_target:
-                    score += 500  # High priority for types needing target quota
+                    score += 5000  # High priority for types needing target quota
+                else:
+                    current_usage = self.relation_type_usage.get(rel_type, 0)
+                    if current_usage >= self.MAXIMUM_QUOTA_PER_TYPE:
+                        score -= 3000  # Penalty for overrepresented types
             
-            # Lower score for templates that don't produce needed types
-            if score == 0:
-                score = 1  # Low score but not zero
+            # If template doesn't produce any needed types, penalize it
+            if score <= 0:
+                score = -500  # Negative score for unhelpful templates
             
             return score
             
         except Exception:
-            return 0
+            return -10000  # Very negative score for failed templates
     
     def _score_template_for_balanced_distribution(self, template_class, perspective):
         """Score template for balanced distribution phase - even out remaining types."""
@@ -4763,59 +4773,55 @@ class BalancedTemplateManager:
             template = template_class(0, datetime.now(), perspective or "first_person")
             _, entities_meta, relations_meta = template.generate()
             
-            score = 0
-            has_overrepresented = False
+            score = 1000  # Start with positive base score
             
-            # Score based on how underrepresented the types are
+            # More permissive scoring in balanced distribution phase
             for _, (entity_type, _) in entities_meta.items():
                 current_usage = self.entity_type_usage.get(entity_type, 0)
                 
-                if current_usage >= self.MAXIMUM_QUOTA_PER_TYPE:
-                    # This type is at or over maximum quota - strong penalty
-                    score -= 1000
-                    has_overrepresented = True
-                elif current_usage < self.MINIMUM_QUOTA_PER_TYPE:
-                    # This type needs minimum quota - very high score
-                    score += 500
+                if current_usage < self.MINIMUM_QUOTA_PER_TYPE:
+                    # This type needs minimum quota - huge bonus (shouldn't happen in Phase 3)
+                    score += 10000
                 elif current_usage < self.TARGET_QUOTA_PER_TYPE:
-                    # This type needs target quota - high score
-                    score += 200
+                    # This type needs target quota - large bonus
+                    score += 2000
+                elif current_usage < self.MAXIMUM_QUOTA_PER_TYPE:
+                    # This type is acceptable, give small bonus based on how far from max
+                    remaining_room = self.MAXIMUM_QUOTA_PER_TYPE - current_usage
+                    score += remaining_room * 50  # Favor types with more room to grow
                 else:
-                    # This type is at target but under maximum - moderate score
-                    score += 50
+                    # This type is at/over maximum quota - penalty but not massive
+                    score -= 500  # Moderate penalty, not crushing
             
             for rel_type, _, _ in relations_meta:
                 current_usage = self.relation_type_usage.get(rel_type, 0)
                 
-                if current_usage >= self.MAXIMUM_QUOTA_PER_TYPE:
-                    # This type is at or over maximum quota - strong penalty
-                    score -= 1000
-                    has_overrepresented = True
-                elif current_usage < self.MINIMUM_QUOTA_PER_TYPE:
-                    # This type needs minimum quota - very high score
-                    score += 500
+                if current_usage < self.MINIMUM_QUOTA_PER_TYPE:
+                    # This type needs minimum quota - huge bonus (shouldn't happen in Phase 3)
+                    score += 10000
                 elif current_usage < self.TARGET_QUOTA_PER_TYPE:
-                    # This type needs target quota - high score
-                    score += 200
+                    # This type needs target quota - large bonus
+                    score += 2000
+                elif current_usage < self.MAXIMUM_QUOTA_PER_TYPE:
+                    # This type is acceptable, give small bonus based on how far from max
+                    remaining_room = self.MAXIMUM_QUOTA_PER_TYPE - current_usage
+                    score += remaining_room * 50  # Favor types with more room to grow
                 else:
-                    # This type is at target but under maximum - moderate score
-                    score += 50
+                    # This type is at/over maximum quota - penalty but not massive
+                    score -= 500  # Moderate penalty, not crushing
             
-            # Additional penalty for overused templates
+            # Light penalty for overused templates (but don't kill the score)
             template_usage = self.template_usage_counts[template_class.__name__]
-            if template_usage > 20:
-                score -= 100  # Heavy penalty for very overused templates
-            elif template_usage > 10:
-                score -= 50   # Moderate penalty for overused templates
+            if template_usage > 50:
+                score -= 200  # Light penalty for very overused templates
+            elif template_usage > 30:
+                score -= 100  # Very light penalty for overused templates
             
-            # If template only produces overrepresented types, give it very low score
-            if has_overrepresented and score <= 0:
-                return 1  # Very low but non-zero score
-            
-            return max(score, 1)  # Ensure minimum score of 1
+            # Ensure minimum positive score to keep generation moving
+            return max(score, 100)  # Always keep some positive score
             
         except Exception:
-            return 1
+            return 50  # Small positive score for failed templates
 
     def get_balance_score(self) -> float:
         """Calculate balance score (0-100, where 100 is perfectly balanced)."""
