@@ -4798,10 +4798,11 @@ class BalancedTemplateManager:
         self.target_records = 0  # Will be set during generation
         self.generation_phase = "coverage"  # "coverage" or "balanced"
         
-        # Progressive quota system - even more aggressive for true balance
+        # Progressive quota system with hard caps for true balance  
         self.minimum_quota_per_type = 1  # Allow any coverage to count
         self.target_quota_per_type = 5   # Lower target for better distribution
-        self.max_quota_per_type = 12     # Cap to prevent severe overrepresentation
+        self.max_quota_per_type = 8      # Strict cap to prevent severe overrepresentation
+        self.absolute_max_quota = 12     # Absolute maximum to prevent any type from dominating
         
         print(f"🎯 Two-Tier BalancedTemplateManager initialized:")
         print(f"   - Tier 1 (Common) templates: {len(self.tier1_common_templates)}")
@@ -5098,7 +5099,7 @@ class BalancedTemplateManager:
         return None
 
     def _select_from_tier1_templates(self, perspective: str = None) -> object:
-        """Select from Tier 1 common templates with strict overrepresentation penalties."""
+        """Select from Tier 1 common templates with absolute caps on overrepresentation."""
         if perspective == "first_person":
             templates = [t for t in self.first_person_templates if t in self.tier1_common_templates]
         elif perspective == "third_person":
@@ -5106,7 +5107,7 @@ class BalancedTemplateManager:
         else:
             templates = self.tier1_common_templates
         
-        # Very strict selection logic to prevent overrepresentation
+        # Ultra-strict selection logic with absolute caps
         template_scores = {}
         
         for template_class in templates:
@@ -5115,48 +5116,52 @@ class BalancedTemplateManager:
                 _, entities_meta, relations_meta = template.generate()
                 
                 score = 0
-                severely_overrepresented = False
+                violates_absolute_cap = False
                 
-                # Extremely harsh penalties for overrepresented types
+                # Absolute prohibition of templates that would exceed caps
                 for _, (entity_type, _) in entities_meta.items():
                     current_usage = self.entity_type_usage.get(entity_type, 0)
-                    if current_usage >= self.max_quota_per_type:
-                        severely_overrepresented = True
-                        score = -10000  # Massive penalty
+                    if current_usage >= self.absolute_max_quota:
+                        violates_absolute_cap = True
+                        score = -100000  # Absolute rejection
                         break
+                    elif current_usage >= self.max_quota_per_type:
+                        score -= 5000  # Severe penalty
                     elif current_usage > self.target_quota_per_type:
-                        score -= (current_usage - self.target_quota_per_type) * 100
+                        score -= (current_usage - self.target_quota_per_type) * 200
                     elif current_usage < self.target_quota_per_type:
-                        score += (self.target_quota_per_type - current_usage) * 10
+                        score += (self.target_quota_per_type - current_usage) * 50
                 
-                if not severely_overrepresented:
+                if not violates_absolute_cap:
                     for rel_type, _, _ in relations_meta:
                         current_usage = self.relation_type_usage.get(rel_type, 0)
-                        if current_usage >= self.max_quota_per_type:
-                            severely_overrepresented = True
-                            score = -10000  # Massive penalty
+                        if current_usage >= self.absolute_max_quota:
+                            violates_absolute_cap = True
+                            score = -100000  # Absolute rejection
                             break
+                        elif current_usage >= self.max_quota_per_type:
+                            score -= 5000  # Severe penalty
                         elif current_usage > self.target_quota_per_type:
-                            score -= (current_usage - self.target_quota_per_type) * 100
+                            score -= (current_usage - self.target_quota_per_type) * 200
                         elif current_usage < self.target_quota_per_type:
-                            score += (self.target_quota_per_type - current_usage) * 10
+                            score += (self.target_quota_per_type - current_usage) * 50
                 
                 # Template usage penalty
                 template_usage = self.template_usage_counts.get(template_class.__name__, 0)
-                if template_usage > 8:
+                if template_usage > 6:
                     score *= 0.1
-                elif template_usage > 5:
-                    score *= 0.3
+                elif template_usage > 4:
+                    score *= 0.4
                 
                 template_scores[template_class] = score
                 
             except Exception:
                 template_scores[template_class] = 1
         
-        # Only select templates with positive scores (no overrepresentation)
+        # Only select templates with positive scores (no cap violations)
         if template_scores:
             max_score = max(template_scores.values())
-            if max_score > 0:  # Only use templates that won't cause overrepresentation
+            if max_score > 0:  # Only use templates that won't violate caps
                 best_template = max(template_scores.keys(), key=lambda t: template_scores[t])
                 return best_template
         
