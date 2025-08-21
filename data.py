@@ -4505,23 +4505,70 @@ class BalancedTemplateManager:
         if self.target_records == 0:
             return [], []
         
+        # Get all defined types to detect missing ones
+        all_entity_types = {attr for attr in dir(EntityTypes) if not attr.startswith('_')}
+        all_relation_types = {attr for attr in dir(RelationTypes) if not attr.startswith('_')}
+        
         entity_target = self.target_records // self.total_entities
         relation_target = self.target_records // self.total_relations
         
         underrep_entities = []
         underrep_relations = []
         
-        # Find entity types significantly under target
-        for entity_type, count in self.entity_type_usage.items():
-            if count < entity_target * 0.5:  # Less than 50% of target
+        # CRITICAL: Find completely missing entity types (never generated)
+        for entity_type in all_entity_types:
+            count = self.entity_type_usage.get(entity_type, 0)
+            if count == 0:
+                underrep_entities.append(entity_type)  # Highest priority for missing types
+            elif count < entity_target * 0.5:  # Less than 50% of target
                 underrep_entities.append(entity_type)
         
-        # Find relation types significantly under target  
-        for relation_type, count in self.relation_type_usage.items():
-            if count < relation_target * 0.5:  # Less than 50% of target
+        # CRITICAL: Find completely missing relation types (never generated)
+        for relation_type in all_relation_types:
+            count = self.relation_type_usage.get(relation_type, 0)
+            if count == 0:
+                underrep_relations.append(relation_type)  # Highest priority for missing types
+            elif count < relation_target * 0.5:  # Less than 50% of target
                 underrep_relations.append(relation_type)
         
         return underrep_entities, underrep_relations
+    
+    def get_missing_types(self) -> tuple:
+        """Get lists of entity and relation types that have never been generated."""
+        all_entity_types = {attr for attr in dir(EntityTypes) if not attr.startswith('_')}
+        all_relation_types = {attr for attr in dir(RelationTypes) if not attr.startswith('_')}
+        
+        missing_entities = []
+        missing_relations = []
+        
+        # Find completely missing entity types
+        for entity_type in all_entity_types:
+            if self.entity_type_usage.get(entity_type, 0) == 0:
+                missing_entities.append(entity_type)
+        
+        # Find completely missing relation types
+        for relation_type in all_relation_types:
+            if self.relation_type_usage.get(relation_type, 0) == 0:
+                missing_relations.append(relation_type)
+        
+        return missing_entities, missing_relations
+    
+    def validate_100_percent_coverage(self) -> bool:
+        """Validate that 100% coverage has been achieved."""
+        missing_entities, missing_relations = self.get_missing_types()
+        
+        if missing_entities or missing_relations:
+            print(f"❌ COVERAGE VALIDATION FAILED!")
+            if missing_entities:
+                print(f"   Missing entity types ({len(missing_entities)}): {', '.join(sorted(missing_entities))}")
+            if missing_relations:
+                print(f"   Missing relation types ({len(missing_relations)}): {', '.join(sorted(missing_relations))}")
+            return False
+        else:
+            print(f"✅ COVERAGE VALIDATION PASSED!")
+            print(f"   Entity coverage: 100.0% ({len(self.covered_entities)}/{self.total_entities})")
+            print(f"   Relation coverage: 100.0% ({len(self.covered_relations)}/{self.total_relations})")
+            return True
     
     def calculate_entity_relation_balance(self) -> Dict[str, float]:
         """Calculate separate balance scores for entities and relations."""
@@ -4607,7 +4654,7 @@ class BalancedTemplateManager:
                             has_needed_types = True
                             break
                 
-                # Scoring logic
+                # Scoring logic with EXTREME priority for missing types
                 if has_capped_types:
                     templates_with_capped_types += 1
                     if self.generation_phase == "balanced":
@@ -4616,19 +4663,44 @@ class BalancedTemplateManager:
                         score = 0.01  # Very low score during coverage phase
                 elif has_needed_types:
                     templates_with_needed_types += 1
-                    # Very high score for templates that produce needed types
-                    score = 10000
+                    
+                    # Check if this template produces COMPLETELY MISSING types (count = 0)
+                    has_missing_types = False
+                    for _, (entity_type, _) in entities_meta.items():
+                        if self.entity_type_usage.get(entity_type, 0) == 0:
+                            has_missing_types = True
+                            break
+                    
+                    if not has_missing_types:
+                        for rel_type, _, _ in relations_meta:
+                            if self.relation_type_usage.get(rel_type, 0) == 0:
+                                has_missing_types = True
+                                break
+                    
+                    if has_missing_types:
+                        # MAXIMUM PRIORITY for templates that produce missing types
+                        score = 1000000  # Extremely high score for missing types
+                        print(f"   🎯 CRITICAL: Template {template_class.__name__} produces missing types!")
+                    else:
+                        # High score for templates that produce underrepresented types
+                        score = 10000
                     
                     # Additional scoring based on how much the types are needed
                     for _, (entity_type, _) in entities_meta.items():
                         if entity_type in underrep_entities:
                             gap_score = self.get_distribution_gap_score(entity_type, is_entity=True)
-                            score += gap_score * 10  # Amplify the gap score
+                            if self.entity_type_usage.get(entity_type, 0) == 0:
+                                score += gap_score * 1000  # Massive bonus for missing types
+                            else:
+                                score += gap_score * 10  # Standard bonus for underrepresented
                     
                     for rel_type, _, _ in relations_meta:
                         if rel_type in underrep_relations:
                             gap_score = self.get_distribution_gap_score(rel_type, is_entity=False)
-                            score += gap_score * 10  # Amplify the gap score
+                            if self.relation_type_usage.get(rel_type, 0) == 0:
+                                score += gap_score * 1000  # Massive bonus for missing types
+                            else:
+                                score += gap_score * 10  # Standard bonus for underrepresented
                 else:
                     # Standard scoring for templates that don't produce capped or specifically needed types
                     for _, (entity_type, _) in entities_meta.items():
@@ -4887,11 +4959,13 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
         if phase1_first_person_remaining > 0 and (phase1_third_person_remaining <= 0 or random.random() < Config.FIRST_PERSON_RATIO):
             perspective = "first_person"
             phase1_first_person_remaining -= 1
-            TemplateClass = manager.get_least_used_template("first_person")
+            # Use enhanced template selection to prioritize missing types
+            TemplateClass = manager.select_next_template("first_person")
         else:
             perspective = "third_person"
             phase1_third_person_remaining -= 1
-            TemplateClass = manager.get_least_used_template("third_person")
+            # Use enhanced template selection to prioritize missing types
+            TemplateClass = manager.select_next_template("third_person")
         
         template_instance = TemplateClass(template_id=i, base_date=base_date, perspective=perspective)
         
@@ -5008,6 +5082,16 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
                   f"Balance: {coverage_stats['balance_score']:.1f}% | "
                   f"Failed: {failed_generations} | "
                   f"Success: {(current_total / num_records * 100):.1f}%")
+    
+    # FINAL VALIDATION: Ensure 100% coverage achieved
+    print(f"\n🔍 FINAL COVERAGE VALIDATION")
+    coverage_achieved = manager.validate_100_percent_coverage()
+    
+    if not coverage_achieved:
+        print(f"⚠️  WARNING: 100% coverage not achieved! Dataset may have gaps.")
+        missing_entities, missing_relations = manager.get_missing_types()
+        if missing_entities or missing_relations:
+            print(f"   Consider running additional coverage-focused generation to fill gaps.")
     
     # Generate enhanced statistics
     stats = generate_balanced_statistics(dataset, failed_generations, failure_reasons, quality_issues, 
