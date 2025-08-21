@@ -4364,10 +4364,11 @@ def print_statistics(stats: Dict):
 class BalancedTemplateManager:
     """Manages template usage tracking for perfectly balanced dataset generation."""
     
-    # Mandatory Progressive Quota System (balanced approach)
-    MINIMUM_QUOTA_PER_TYPE = 6   # Every type gets at least 6 occurrences  
-    TARGET_QUOTA_PER_TYPE = 12   # Target for balanced distribution  
-    MAXIMUM_QUOTA_PER_TYPE = 20  # Hard cap to prevent overrepresentation
+    # Perfect Balance Quota System - Much more aggressive for DeBERTa training
+    MINIMUM_QUOTA_PER_TYPE = 250   # Every type gets substantial representation  
+    TARGET_QUOTA_PER_TYPE = 500    # Target for good balance
+    PERFECT_QUOTA_PER_TYPE = 600   # Perfect balance target  
+    MAXIMUM_QUOTA_PER_TYPE = 700   # Hard cap to prevent overrepresentation
     
     def __init__(self, first_person_templates: List, third_person_templates: List):
         self.first_person_templates = first_person_templates
@@ -4404,7 +4405,7 @@ class BalancedTemplateManager:
         print(f"   - Total templates: {len(self.all_templates)}")
         print(f"   - Entity types to balance: {len(all_entity_types)}")
         print(f"   - Relation types to balance: {len(all_relation_types)}")
-        print(f"   - Mandatory quotas: MIN={self.MINIMUM_QUOTA_PER_TYPE}, TARGET={self.TARGET_QUOTA_PER_TYPE}, MAX={self.MAXIMUM_QUOTA_PER_TYPE}")
+        print(f"   - PERFECT BALANCE quotas: MIN={self.MINIMUM_QUOTA_PER_TYPE}, TARGET={self.TARGET_QUOTA_PER_TYPE}, PERFECT={self.PERFECT_QUOTA_PER_TYPE}, MAX={self.MAXIMUM_QUOTA_PER_TYPE}")
     
     def get_quota(self, type_name: str, current_count: int) -> int:
         """Get the current quota for a type based on its current count."""
@@ -4412,6 +4413,8 @@ class BalancedTemplateManager:
             return self.MINIMUM_QUOTA_PER_TYPE
         elif current_count < self.TARGET_QUOTA_PER_TYPE:
             return self.TARGET_QUOTA_PER_TYPE
+        elif current_count < self.PERFECT_QUOTA_PER_TYPE:
+            return self.PERFECT_QUOTA_PER_TYPE
         else:
             return self.MAXIMUM_QUOTA_PER_TYPE
     
@@ -4476,6 +4479,21 @@ class BalancedTemplateManager:
                 relations_needing_target.append(relation_type)
         
         return entities_needing_target, relations_needing_target
+
+    def get_types_needing_perfect_quota(self):
+        """Get entity and relation types that need perfect quota fulfillment."""
+        entities_needing_perfect = []
+        relations_needing_perfect = []
+        
+        for entity_type, count in self.entity_type_usage.items():
+            if self.TARGET_QUOTA_PER_TYPE <= count < self.PERFECT_QUOTA_PER_TYPE:
+                entities_needing_perfect.append(entity_type)
+        
+        for relation_type, count in self.relation_type_usage.items():
+            if self.TARGET_QUOTA_PER_TYPE <= count < self.PERFECT_QUOTA_PER_TYPE:
+                relations_needing_perfect.append(relation_type)
+        
+        return entities_needing_perfect, relations_needing_perfect
 
     def get_least_used_template(self, perspective: str = None) -> object:
         """Get the least used template, optionally filtered by perspective."""
@@ -4632,7 +4650,7 @@ class BalancedTemplateManager:
         }
     
     def select_next_template(self, perspective: str = None) -> object:
-        """Enhanced template selection with strict quota enforcement and three-phase strategy."""
+        """Enhanced template selection with strict quota enforcement and four-phase strategy."""
         if perspective == "first_person":
             templates = self.first_person_templates
         elif perspective == "third_person":
@@ -4640,23 +4658,26 @@ class BalancedTemplateManager:
         else:
             templates = self.all_templates
         
-        # Phase 1: Coverage - Ensure every type gets minimum 1 occurrence
+        # Four-phase system for perfect balance
         entities_needing_min, relations_needing_min = self.get_types_needing_minimum_quota()
         entities_needing_target, relations_needing_target = self.get_types_needing_target_quota()
+        entities_needing_perfect, relations_needing_perfect = self.get_types_needing_perfect_quota()
         
         # Determine current generation phase
         current_phase = "coverage"
         if not entities_needing_min and not relations_needing_min:
             if entities_needing_target or relations_needing_target:
                 current_phase = "minimum_quotas"
+            elif entities_needing_perfect or relations_needing_perfect:
+                current_phase = "perfect_balance"
             else:
-                current_phase = "balanced_distribution"
+                current_phase = "strict_enforcement"
         
-        # Score ALL templates (don't pre-filter), but make scoring very decisive
+        # Score ALL templates with very strict criteria
         template_scores = {}
         
         if current_phase == "coverage":
-            # Phase 1: ONLY templates producing types <5 occurrences get good scores
+            # Phase 1: Only templates producing types below minimum quota
             print(f"📍 Phase 1 (Coverage): Seeking {len(entities_needing_min)} entities, {len(relations_needing_min)} relations needing minimum quota")
             
             for template_class in templates:
@@ -4664,19 +4685,27 @@ class BalancedTemplateManager:
                 template_scores[template_class] = score
                 
         elif current_phase == "minimum_quotas":
-            # Phase 2: ONLY templates producing types <8 occurrences get good scores
+            # Phase 2: Only templates producing types below target quota
             print(f"📍 Phase 2 (Minimum Quotas): Seeking {len(entities_needing_target)} entities, {len(relations_needing_target)} relations needing target quota")
             
             for template_class in templates:
                 score = self._score_template_for_minimum_quotas(template_class, entities_needing_target, relations_needing_target, perspective)
                 template_scores[template_class] = score
                 
-        else:
-            # Phase 3: Balanced distribution with strict limits
-            print(f"📍 Phase 3 (Balanced Distribution): Enforcing strict balance")
+        elif current_phase == "perfect_balance":
+            # Phase 3: Only templates producing types below perfect quota
+            print(f"📍 Phase 3 (Perfect Balance): Seeking {len(entities_needing_perfect)} entities, {len(relations_needing_perfect)} relations needing perfect quota")
             
             for template_class in templates:
-                score = self._score_template_for_balanced_distribution(template_class, perspective)
+                score = self._score_template_for_perfect_balance(template_class, entities_needing_perfect, relations_needing_perfect, perspective)
+                template_scores[template_class] = score
+                
+        else:
+            # Phase 4: Strict enforcement - only allow templates that don't break balance
+            print(f"📍 Phase 4 (Strict Enforcement): Maintaining perfect balance")
+            
+            for template_class in templates:
+                score = self._score_template_for_strict_enforcement(template_class, perspective)
                 template_scores[template_class] = score
         
         # Select template with highest score
@@ -4777,58 +4806,98 @@ class BalancedTemplateManager:
         except Exception:
             return 10  # Small positive score for failed templates
     
-    def _score_template_for_balanced_distribution(self, template_class, perspective):
-        """Score template for balanced distribution phase - even out remaining types."""
+    def _score_template_for_perfect_balance(self, template_class, entities_needing_perfect, relations_needing_perfect, perspective):
+        """Score template for perfect balance phase - prioritize templates that produce types needing perfect quota."""
         try:
             template = template_class(0, datetime.now(), perspective or "first_person")
             _, entities_meta, relations_meta = template.generate()
             
-            score = 1000  # Start with positive base score
+            score = 100  # Start with positive base score
             
-            # More permissive scoring in balanced distribution phase
+            # Very high score for producing entities that need perfect quota
+            for _, (entity_type, _) in entities_meta.items():
+                if entity_type in entities_needing_perfect:
+                    score += 10000  # Massive priority for types needing perfect balance
+                else:
+                    current_usage = self.entity_type_usage.get(entity_type, 0)
+                    if current_usage >= self.MAXIMUM_QUOTA_PER_TYPE:
+                        score -= 15000  # Massive penalty for overrepresented types
+                    elif current_usage >= self.PERFECT_QUOTA_PER_TYPE:
+                        score -= 5000   # Large penalty for types over perfect quota
+                    elif current_usage >= self.TARGET_QUOTA_PER_TYPE:
+                        score -= 1000   # Moderate penalty for types at target
+            
+            # Very high score for producing relations that need perfect quota
+            for rel_type, _, _ in relations_meta:
+                if rel_type in relations_needing_perfect:
+                    score += 10000  # Massive priority for types needing perfect balance
+                else:
+                    current_usage = self.relation_type_usage.get(rel_type, 0)
+                    if current_usage >= self.MAXIMUM_QUOTA_PER_TYPE:
+                        score -= 15000  # Massive penalty for overrepresented types
+                    elif current_usage >= self.PERFECT_QUOTA_PER_TYPE:
+                        score -= 5000   # Large penalty for types over perfect quota
+                    elif current_usage >= self.TARGET_QUOTA_PER_TYPE:
+                        score -= 1000   # Moderate penalty for types at target
+            
+            # If very few types need help, be less picky
+            total_needing_help = len(entities_needing_perfect) + len(relations_needing_perfect)
+            if total_needing_help <= 5:
+                score = max(score, 50)  # Ensure minimum positive score when almost done
+            
+            return max(score, 10)  # Always ensure some positive score
+            
+        except Exception:
+            return 10  # Small positive score for failed templates
+    
+    def _score_template_for_strict_enforcement(self, template_class, perspective):
+        """Score template for strict enforcement phase - only allow templates that maintain perfect balance."""
+        try:
+            template = template_class(0, datetime.now(), perspective or "first_person")
+            _, entities_meta, relations_meta = template.generate()
+            
+            score = 5000  # Start with high positive base score
+            
+            # Very strict scoring - heavily penalize any imbalance
             for _, (entity_type, _) in entities_meta.items():
                 current_usage = self.entity_type_usage.get(entity_type, 0)
                 
-                if current_usage < self.MINIMUM_QUOTA_PER_TYPE:
-                    # This type needs minimum quota - huge bonus (shouldn't happen in Phase 3)
-                    score += 10000
-                elif current_usage < self.TARGET_QUOTA_PER_TYPE:
-                    # This type needs target quota - large bonus
-                    score += 2000
+                if current_usage < self.PERFECT_QUOTA_PER_TYPE:
+                    # This type needs more - give bonus based on how much it needs
+                    deficit = self.PERFECT_QUOTA_PER_TYPE - current_usage
+                    score += deficit * 100  # Large bonus for types needing more
                 elif current_usage < self.MAXIMUM_QUOTA_PER_TYPE:
-                    # This type is acceptable, give small bonus based on how far from max
+                    # This type is acceptable but close to limit - small bonus
                     remaining_room = self.MAXIMUM_QUOTA_PER_TYPE - current_usage
-                    score += remaining_room * 50  # Favor types with more room to grow
+                    score += remaining_room * 10
                 else:
-                    # This type is at/over maximum quota - penalty but not massive
-                    score -= 500  # Moderate penalty, not crushing
+                    # This type is over limit - massive penalty
+                    score -= 10000
             
             for rel_type, _, _ in relations_meta:
                 current_usage = self.relation_type_usage.get(rel_type, 0)
                 
-                if current_usage < self.MINIMUM_QUOTA_PER_TYPE:
-                    # This type needs minimum quota - huge bonus (shouldn't happen in Phase 3)
-                    score += 10000
-                elif current_usage < self.TARGET_QUOTA_PER_TYPE:
-                    # This type needs target quota - large bonus
-                    score += 2000
+                if current_usage < self.PERFECT_QUOTA_PER_TYPE:
+                    # This type needs more - give bonus based on how much it needs
+                    deficit = self.PERFECT_QUOTA_PER_TYPE - current_usage
+                    score += deficit * 100  # Large bonus for types needing more
                 elif current_usage < self.MAXIMUM_QUOTA_PER_TYPE:
-                    # This type is acceptable, give small bonus based on how far from max
+                    # This type is acceptable but close to limit - small bonus
                     remaining_room = self.MAXIMUM_QUOTA_PER_TYPE - current_usage
-                    score += remaining_room * 50  # Favor types with more room to grow
+                    score += remaining_room * 10
                 else:
-                    # This type is at/over maximum quota - penalty but not massive
-                    score -= 500  # Moderate penalty, not crushing
+                    # This type is over limit - massive penalty
+                    score -= 10000
             
-            # Light penalty for overused templates (but don't kill the score)
+            # Penalty for overused templates
             template_usage = self.template_usage_counts[template_class.__name__]
-            if template_usage > 50:
-                score -= 200  # Light penalty for very overused templates
-            elif template_usage > 30:
-                score -= 100  # Very light penalty for overused templates
+            if template_usage > 100:
+                score -= 1000  # Heavy penalty for very overused templates
+            elif template_usage > 50:
+                score -= 500   # Moderate penalty for overused templates
             
-            # Ensure minimum positive score to keep generation moving
-            return max(score, 100)  # Always keep some positive score
+            # If score is negative, this template would hurt balance
+            return max(score, -10000)  # Allow negative scores to block harmful templates
             
         except Exception:
             return 50  # Small positive score for failed templates
@@ -4890,15 +4959,15 @@ class BalancedTemplateManager:
         }
 
 def generate_balanced_dataset(num_records: int = None) -> Dict:
-    """Generate perfectly balanced dataset with enhanced tracking and two-phase algorithm."""
+    """Generate perfectly balanced dataset with enhanced tracking and four-phase algorithm."""
     
     if num_records is None:
         num_records = Config.DEFAULT_NUM_RECORDS
     
-    print(f"🚀 ENHANCED BALANCED DATASET GENERATION")
+    print(f"🚀 PERFECT BALANCE DATASET GENERATION FOR DEBERTA TRAINING")
     print(f"============================================================")
     print(f"🎯 Target: {num_records} perfectly balanced records")
-    print(f"📊 Two-phase algorithm: Coverage Guarantee + Balanced Distribution")
+    print(f"📊 Four-phase algorithm: Coverage → Minimum → Perfect → Strict Enforcement")
     
     dataset = []
     base_date = datetime.strptime(Config.CURRENT_UTC_DATETIME, "%Y-%m-%d %H:%M:%S")
@@ -5029,82 +5098,20 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
     first_person_target = int(num_records * Config.FIRST_PERSON_RATIO)
     third_person_target = num_records - first_person_target
     
-    print(f"📋 Generation Plan:")
+    print(f"📋 Perfect Balance Generation Plan:")
     print(f"   - First-person records: {first_person_target} ({Config.FIRST_PERSON_RATIO:.0%})")
     print(f"   - Third-person records: {third_person_target} ({Config.THIRD_PERSON_RATIO:.0%})")
     print(f"   - Templates per perspective: {len(first_person_templates)} + {len(third_person_templates)}")
+    print(f"   - Target balance: ~{num_records//68:.0f} per entity type, ~{num_records//104:.0f} per relation type")
     
-    # PHASE 1: Coverage Guarantee Phase
-    print(f"\n🎯 PHASE 1: Coverage Guarantee Phase")
-    coverage_phase_target = min(1000, num_records // 10)  # 10% for coverage guarantee
+    # FOUR-PHASE PERFECT BALANCE ALGORITHM
     
-    # Track targets for Phase 1
-    phase1_first_person_target = int(coverage_phase_target * Config.FIRST_PERSON_RATIO)
-    phase1_third_person_target = coverage_phase_target - phase1_first_person_target
-    phase1_first_person_remaining = phase1_first_person_target
-    phase1_third_person_remaining = phase1_third_person_target
+    # Track targets for each phase
+    first_person_remaining = first_person_target
+    third_person_remaining = third_person_target
     
-    for i in range(coverage_phase_target):
-        # Properly distribute perspectives to maintain ratio
-        if phase1_first_person_remaining > 0 and (phase1_third_person_remaining <= 0 or random.random() < Config.FIRST_PERSON_RATIO):
-            perspective = "first_person"
-            phase1_first_person_remaining -= 1
-            TemplateClass = manager.get_least_used_template("first_person")
-        else:
-            perspective = "third_person"
-            phase1_third_person_remaining -= 1
-            TemplateClass = manager.get_least_used_template("third_person")
-        
-        template_instance = TemplateClass(template_id=i, base_date=base_date, perspective=perspective)
-        
-        success = False
-        for attempt in range(Config.MAX_RETRIES):
-            try:
-                record = template_instance.build()
-                
-                # Enhanced validation
-                if not record.get('entities'):
-                    raise ValueError("No entities found")
-                if not record.get('text'):
-                    raise ValueError("No text found")
-                if len(record.get('relations', [])) == 0:
-                    raise ValueError("No relations found")
-                
-                # Get metadata for tracking
-                _, entities_meta, relations_meta = template_instance.generate()
-                manager.record_template_usage(TemplateClass, entities_meta, relations_meta)
-                
-                dataset.append(record)
-                success = True
-                break
-                
-            except Exception as e:
-                error_type = type(e).__name__
-                failure_reasons[error_type] = failure_reasons.get(error_type, 0) + 1
-                
-                if attempt == Config.MAX_RETRIES - 1:
-                    failed_generations += 1
-        
-        # Progress reporting for coverage phase
-        if (i + 1) % 100 == 0 or i + 1 == coverage_phase_target:
-            coverage_stats = manager.get_coverage_stats()
-            print(f"   Coverage Phase: {i+1}/{coverage_phase_target} | "
-                  f"Entities: {coverage_stats['entity_coverage_percent']:.1f}% | "
-                  f"Relations: {coverage_stats['relation_coverage_percent']:.1f}% | "
-                  f"Balance: {coverage_stats['balance_score']:.1f}%")
-    
-    # PHASE 2: Balanced Distribution Phase
-    print(f"\n⚖️  PHASE 2: Balanced Distribution Phase")
-    
-    # Switch to balanced phase with strict frequency capping
-    manager.set_generation_parameters(num_records, "balanced")
-    
-    remaining_records = num_records - len(dataset)
-    first_person_remaining = first_person_target - sum(1 for r in dataset if r.get('context', {}).get('Perspective') == 'first_person')
-    third_person_remaining = third_person_target - sum(1 for r in dataset if r.get('context', {}).get('Perspective') == 'third_person')
-    
-    for i in range(remaining_records):
-        # Determine perspective based on remaining targets - use simple deterministic logic
+    for i in range(num_records):
+        # Determine perspective based on remaining targets
         target_perspective = None
         if first_person_remaining > 0 and third_person_remaining > 0:
             # Both perspectives still needed - use ratio to decide
@@ -5114,22 +5121,20 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
             else:
                 target_perspective = "third_person"
         elif first_person_remaining > 0:
-            # Only first-person remaining
             target_perspective = "first_person"
         else:
-            # Only third-person remaining (or both exhausted)
             target_perspective = "third_person"
         
-        # Use enhanced template selection with frequency capping
+        # Use enhanced four-phase template selection
         TemplateClass = manager.select_next_template(target_perspective)
-        template_instance = TemplateClass(template_id=len(dataset), base_date=base_date, perspective=target_perspective)
+        template_instance = TemplateClass(template_id=i, base_date=base_date, perspective=target_perspective)
         
         success = False
         for attempt in range(Config.MAX_RETRIES):
             try:
                 record = template_instance.build()
                 
-                # Basic validation only for now (same as Phase 1)
+                # Enhanced validation for perfect balance
                 if not record.get('entities'):
                     raise ValueError("No entities found")
                 if not record.get('text'):
@@ -5162,14 +5167,16 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
                 if attempt == Config.MAX_RETRIES - 1:
                     failed_generations += 1
         
-        # Enhanced progress reporting
-        if (i + 1) % Config.PROGRESS_INTERVAL == 0 or i + 1 == remaining_records:
+        # Enhanced progress reporting with balance tracking
+        if (i + 1) % Config.PROGRESS_INTERVAL == 0 or i + 1 == num_records:
             current_total = len(dataset)
             coverage_stats = manager.get_coverage_stats()
-            print(f"   Balanced Phase: {current_total}/{num_records} | "
-                  f"Balance: {coverage_stats['balance_score']:.1f}% | "
-                  f"Failed: {failed_generations} | "
-                  f"Success: {(current_total / num_records * 100):.1f}%")
+            balance_breakdown = manager.calculate_entity_relation_balance()
+            print(f"   Progress: {current_total}/{num_records} ({current_total/num_records*100:.1f}%) | "
+                  f"Entity Balance: {balance_breakdown['entity_balance']:.1f}% | "
+                  f"Relation Balance: {balance_breakdown['relation_balance']:.1f}% | "
+                  f"Overall: {balance_breakdown['overall_balance']:.1f}% | "
+                  f"Failed: {failed_generations}")
     
     # Generate enhanced statistics
     stats = generate_balanced_statistics(dataset, failed_generations, failure_reasons, quality_issues, 
@@ -5179,7 +5186,7 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
         "dataset": dataset,
         "statistics": stats,
         "metadata": {
-            "generation_method": "enhanced_balanced",
+            "generation_method": "perfect_balance_four_phase",
             "num_records_requested": num_records,
             "num_records_generated": len(dataset),
             "balance_manager": manager.get_usage_distribution(),
@@ -5349,7 +5356,7 @@ def main():
     
     try:
         if use_balanced_generation:
-            print("🎯 Using Enhanced Balanced Generation Method")
+            print("🎯 Using Perfect Balance Generation Method for DeBERTa Training")
             result = generate_balanced_dataset()
             
             if result["dataset"]:
@@ -5361,25 +5368,31 @@ def main():
                 # Show enhanced metadata
                 metadata = result.get("metadata", {})
                 coverage_stats = metadata.get("coverage_stats", {})
-                print(f"\n🎯 Enhanced Generation Metadata:")
+                print(f"\n🎯 Perfect Balance Generation Metadata:")
                 print(f"   - Generation method: {metadata.get('generation_method', 'unknown')}")
                 print(f"   - Final balance score: {coverage_stats.get('balance_score', 0):.1f}%")
                 print(f"   - Entity coverage: {coverage_stats.get('entity_coverage_percent', 0):.1f}%")
                 print(f"   - Relation coverage: {coverage_stats.get('relation_coverage_percent', 0):.1f}%")
                 
+                # Show balance analysis
+                balance_breakdown = result["statistics"].get("balance_scores", {})
+                print(f"   - Entity balance: {balance_breakdown.get('entity_balance', 0):.1f}%")
+                print(f"   - Relation balance: {balance_breakdown.get('relation_balance', 0):.1f}%")
+                print(f"   - Overall perfect balance: {balance_breakdown.get('overall_balance', 0):.1f}%")
+                
                 # Show sample records with enhanced details
-                print(f"\nSample Records with Enhanced Balance Analysis:")
+                print(f"\nSample Records with Perfect Balance Analysis:")
                 
                 sample_records = random.sample(result["dataset"], min(5, len(result["dataset"])))
                 for i, record in enumerate(sample_records):
-                    print(f"\n--- Enhanced Sample {i+1} ---")
+                    print(f"\n--- Perfect Balance Sample {i+1} ---")
                     print(f"Text: {record['text']}")
                     print(f"Relations: {[r['type'] for r in record['relations']]}")
                     print(f"Entities: {[e['type'] for e in record.get('entities', [])]}")
                     print(f"Perspective: {record.get('context', {}).get('Perspective', 'unknown')}")
                     
             else:
-                print("ERROR: No records were successfully generated with balanced method!")
+                print("ERROR: No records were successfully generated with perfect balance method!")
                 print_balanced_statistics(result["statistics"])
         
         else:
