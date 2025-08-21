@@ -158,6 +158,24 @@ class RelationTypes:
     IS_NEAR = "IS_NEAR"
     TRAVELS_TO = "TRAVELS_TO"
     
+    # Tier 2 specialized relations for rare types
+    EATS = "EATS"
+    VISITS = "VISITS"
+    MAINTAINS_RELATIONSHIP = "MAINTAINS_RELATIONSHIP"
+    CALLED = "CALLED"
+    KNOWN_AS = "KNOWN_AS"
+    HAS_RELATIONSHIP = "HAS_RELATIONSHIP"
+    WORKS_IN = "WORKS_IN"
+    
+    # Tier 2 specialized relations for rare types
+    EATS = "EATS"
+    VISITS = "VISITS"
+    MAINTAINS_RELATIONSHIP = "MAINTAINS_RELATIONSHIP"
+    CALLED = "CALLED"
+    KNOWN_AS = "KNOWN_AS"
+    HAS_RELATIONSHIP = "HAS_RELATIONSHIP"
+    WORKS_IN = "WORKS_IN"
+    
     # Additional comprehensive relations
     HAS_PET = "HAS_PET"
     CARES_FOR = "CARES_FOR"
@@ -798,6 +816,371 @@ class ThirdPersonPetTemplate(Template):
             (RelationTypes.DOES_ACTIVITY, "p1", "care1"),
             (RelationTypes.HAS_FREQUENCY, "care1", "freq1"),
             (RelationTypes.AT_LOCATION, "care1", "loc1")
+        ]
+        
+        return text, entities, relations
+
+# === TIER 2: SPECIALIZED RARE TYPE TEMPLATES ===
+# These templates are specifically designed to produce underrepresented entity/relation types
+
+class GeopoliticalEntityTemplate(Template):
+    """Specialized template for GEOPOLITICAL_ENTITY, LOCATION, and travel relations."""
+    def generate(self):
+        geo_entity = random.choice(GEOPOLITICAL_ENTITIES)
+        travel_purpose = random.choice(["business conference", "vacation", "family visit", "research project", "cultural exchange"])
+        location = random.choice(LOCATIONS)
+        duration = random.choice(["two weeks", "one month", "three months", "six months"])
+        transportation = random.choice(TRANSPORTATION)
+        
+        text = f"I traveled to {geo_entity} for a {travel_purpose}, staying at a {location} for {duration} using {transportation}."
+        
+        entities = {
+            "user": (EntityTypes.PRONOUN, "I"),
+            "geo1": (EntityTypes.GEOPOLITICAL_ENTITY, geo_entity),
+            "purpose1": (EntityTypes.ACTIVITY, travel_purpose),
+            "loc1": (EntityTypes.LOCATION, location),
+            "dur1": (EntityTypes.DURATION, duration),
+            "transport1": (EntityTypes.VEHICLE, transportation)
+        }
+        
+        relations = [
+            (RelationTypes.TRAVELS_TO, "user", "geo1"),
+            (RelationTypes.DOES_ACTIVITY, "user", "purpose1"),
+            (RelationTypes.AT_LOCATION, "user", "loc1"),
+            (RelationTypes.FOR_DURATION, "purpose1", "dur1"),
+            (RelationTypes.USES, "user", "transport1")
+        ]
+        
+        return text, entities, relations
+
+class NicknameIdentityTemplate(Template):
+    """Specialized template for NICKNAME, KNOWN_AS, CALLED relations."""
+    def generate(self):
+        person = random.choice(PEOPLE_NAMES)
+        nickname = random.choice(NICKNAMES)
+        relationship_type = random.choice(["friend", "colleague", "mentor", "teammate", "family member"])
+        reason = random.choice(["leadership skills", "technical expertise", "sense of humor", "reliability", "creativity"])
+        
+        text = f"My {relationship_type} {person} is known as {nickname} because of their {reason}. Everyone calls them by this name."
+        
+        entities = {
+            "user": (EntityTypes.PRONOUN, "I"),
+            "person1": (EntityTypes.PERSON, person),
+            "nick1": (EntityTypes.NICKNAME, nickname),
+            "rel1": (EntityTypes.RELATIONSHIP, relationship_type),
+            "reason1": (EntityTypes.CONCEPT, reason)
+        }
+        
+        relations = [
+            (RelationTypes.IS_FRIENDS_WITH, "user", "person1"),
+            (RelationTypes.KNOWN_AS, "person1", "nick1"),
+            (RelationTypes.CALLED, "person1", "nick1"),
+            (RelationTypes.HAS_RELATIONSHIP, "user", "rel1"),
+            (RelationTypes.CAUSED_BY, "nick1", "reason1")
+        ]
+        
+        return text, entities, relations
+
+class PetCareTemplate(Template):
+    """Specialized template for PET, CARES_FOR, HAS_PET relations."""
+    def generate(self):
+        pet = random.choice(PETS)
+        pet_name = pet.split(" named ")[-1] if " named " in pet else random.choice(["Buddy", "Luna", "Max", "Bella"])
+        pet_type = pet.split(" named ")[0] if " named " in pet else pet
+        care_activity = random.choice(["feeding", "grooming", "training", "walking", "playing with"])
+        food_type = random.choice(["premium dog food", "cat treats", "fresh vegetables", "special diet food"])
+        
+        text = f"I have a {pet_type} named {pet_name}. I enjoy {care_activity} {pet_name} and feeding them {food_type}."
+        
+        entities = {
+            "user": (EntityTypes.PRONOUN, "I"),
+            "pet1": (EntityTypes.PET, pet_name),
+            "pet_type1": (EntityTypes.CONCEPT, pet_type),
+            "activity1": (EntityTypes.ACTIVITY, care_activity),
+            "food1": (EntityTypes.FOOD, food_type)
+        }
+        
+        relations = [
+            (RelationTypes.HAS_PET, "user", "pet1"),
+            (RelationTypes.CARES_FOR, "user", "pet1"),
+            (RelationTypes.IS_TYPE, "pet1", "pet_type1"),
+            (RelationTypes.DOES_ACTIVITY, "user", "activity1"),
+            (RelationTypes.SERVES, "user", "food1")
+        ]
+        
+        return text, entities, relations
+
+class VehicleOwnershipTemplate(Template):
+    """Specialized template for VEHICLE, OWNS, TRAVELS_TO relations."""
+    def generate(self):
+        vehicle = random.choice(VEHICLES)
+        destination = random.choice(GEOPOLITICAL_ENTITIES + LOCATIONS)
+        purpose = random.choice(["work commute", "weekend trip", "vacation", "business meeting", "family visit"])
+        cost_amount = random.choice(["$500 monthly", "$15,000 down payment", "$300 insurance", "$50 gas"])
+        
+        text = f"I own a {vehicle} and use it to travel to {destination} for my {purpose}. It costs me {cost_amount}."
+        
+        entities = {
+            "user": (EntityTypes.PRONOUN, "I"),
+            "vehicle1": (EntityTypes.VEHICLE, vehicle),
+            "dest1": (EntityTypes.LOCATION, destination),
+            "purpose1": (EntityTypes.ACTIVITY, purpose),
+            "amount1": (EntityTypes.AMOUNT, cost_amount)
+        }
+        
+        relations = [
+            (RelationTypes.OWNS, "user", "vehicle1"),
+            (RelationTypes.TRAVELS_TO, "user", "dest1"),
+            (RelationTypes.USED_FOR, "vehicle1", "purpose1"),
+            (RelationTypes.COSTS, "vehicle1", "amount1")
+        ]
+        
+        return text, entities, relations
+
+class MediaConsumptionTemplate(Template):
+    """Specialized template for MEDIA, PLATFORM, GENRE, WATCHES relations."""
+    def generate(self):
+        media = random.choice(MEDIA_TYPES)
+        platform = random.choice(PLATFORMS)
+        genre = random.choice(GENRES)
+        duration = random.choice(["2 hours daily", "30 minutes", "all weekend", "during lunch break"])
+        
+        text = f"I watch {genre} {media} on {platform} for {duration}. I really enjoy this type of content."
+        
+        entities = {
+            "user": (EntityTypes.PRONOUN, "I"),
+            "media1": (EntityTypes.MEDIA, media),
+            "platform1": (EntityTypes.PLATFORM, platform),
+            "genre1": (EntityTypes.GENRE, genre),
+            "dur1": (EntityTypes.DURATION, duration)
+        }
+        
+        relations = [
+            (RelationTypes.WATCHES, "user", "media1"),
+            (RelationTypes.USES, "user", "platform1"),
+            (RelationTypes.PREFERS, "user", "genre1"),
+            (RelationTypes.FOR_DURATION, "media1", "dur1"),
+            (RelationTypes.ENJOYS, "user", "media1")
+        ]
+        
+        return text, entities, relations
+
+class IndustryExpertiseTemplate(Template):
+    """Specialized template for INDUSTRY, WORKS_IN relations."""
+    def generate(self):
+        industry = random.choice(["healthcare", "technology", "finance", "education", "manufacturing", "retail", "energy", "telecommunications"])
+        role = random.choice(ROLES)
+        skill = random.choice(SKILLS)
+        amount = random.choice(["5 years experience", "10+ projects", "200+ clients", "$100K revenue"])
+        
+        text = f"I work as a {role} in the {industry} industry, applying my {skill} skills. I've achieved {amount} in this field."
+        
+        entities = {
+            "user": (EntityTypes.PRONOUN, "I"),
+            "industry1": (EntityTypes.INDUSTRY, industry),
+            "role1": (EntityTypes.ROLE, role),
+            "skill1": (EntityTypes.SKILL, skill),
+            "amount1": (EntityTypes.AMOUNT, amount)
+        }
+        
+        relations = [
+            (RelationTypes.WORKS_IN, "user", "industry1"),
+            (RelationTypes.HAS_ROLE, "user", "role1"),
+            (RelationTypes.HAS_SKILL, "user", "skill1"),
+            (RelationTypes.ACHIEVED, "user", "amount1")
+        ]
+        
+        return text, entities, relations
+
+class FoodPreferenceTemplate(Template):
+    """Specialized template for FOOD, LIKES, PREFERS relations."""
+    def generate(self):
+        food = random.choice(["sushi", "pizza", "tacos", "salad", "pasta", "steak", "vegetarian curry", "Thai food", "Mexican cuisine", "Italian dishes"])
+        restaurant = random.choice(BUSINESS_TYPES)
+        frequency = random.choice(FREQUENCY_DETAILED)
+        amount = random.choice(["$50 per meal", "$200 monthly", "15% of budget", "moderate spending"])
+        
+        text = f"I really like {food} and eat it {frequency}. I usually go to a local {restaurant} and spend {amount}."
+        
+        entities = {
+            "user": (EntityTypes.PRONOUN, "I"),
+            "food1": (EntityTypes.FOOD, food),
+            "business1": (EntityTypes.BUSINESS, restaurant),
+            "freq1": (EntityTypes.FREQUENCY, frequency),
+            "amount1": (EntityTypes.AMOUNT, amount)
+        }
+        
+        relations = [
+            (RelationTypes.LIKES, "user", "food1"),
+            (RelationTypes.EATS, "user", "food1"),
+            (RelationTypes.VISITS, "user", "business1"),
+            (RelationTypes.HAS_FREQUENCY, "food1", "freq1"),
+            (RelationTypes.COSTS, "food1", "amount1")
+        ]
+        
+        return text, entities, relations
+
+class RelationshipDynamicsTemplate(Template):
+    """Specialized template for RELATIONSHIP, IS_FRIENDS_WITH, IS_FAMILY_WITH relations."""
+    def generate(self):
+        person = random.choice(PEOPLE_NAMES)
+        relationship = random.choice(["close friendship", "professional relationship", "family bond", "mentorship", "romantic relationship"])
+        duration = random.choice(["5 years", "since childhood", "3 months", "over a decade"])
+        activity = random.choice(["weekly coffee meetings", "monthly dinners", "project collaboration", "regular check-ins"])
+        
+        text = f"I have a {relationship} with {person} that has lasted {duration}. We maintain it through {activity}."
+        
+        entities = {
+            "user": (EntityTypes.PRONOUN, "I"),
+            "person1": (EntityTypes.PERSON, person),
+            "rel1": (EntityTypes.RELATIONSHIP, relationship),
+            "dur1": (EntityTypes.DURATION, duration),
+            "activity1": (EntityTypes.ACTIVITY, activity)
+        }
+        
+        relations = [
+            (RelationTypes.HAS_RELATIONSHIP, "user", "rel1"),
+            (RelationTypes.IS_FRIENDS_WITH, "user", "person1"),
+            (RelationTypes.FOR_DURATION, "rel1", "dur1"),
+            (RelationTypes.MAINTAINS_RELATIONSHIP, "user", "rel1"),
+            (RelationTypes.DOES_ACTIVITY, "user", "activity1")
+        ]
+        
+        return text, entities, relations
+
+class EquipmentUsageTemplate(Template):
+    """Specialized template for EQUIPMENT, USES, BORROWED, LENT relations."""
+    def generate(self):
+        equipment = random.choice(EQUIPMENT_TYPES)
+        person = random.choice(PEOPLE_NAMES)
+        usage = random.choice(["daily work", "special projects", "presentations", "research"])
+        duration = random.choice(["one week", "two months", "temporarily", "until project completion"])
+        
+        text = f"I borrowed a {equipment} from {person} for {usage}. I used it {duration} before returning it."
+        
+        entities = {
+            "user": (EntityTypes.PRONOUN, "I"),
+            "equip1": (EntityTypes.EQUIPMENT, equipment),
+            "person1": (EntityTypes.PERSON, person),
+            "usage1": (EntityTypes.ACTIVITY, usage),
+            "dur1": (EntityTypes.DURATION, duration)
+        }
+        
+        relations = [
+            (RelationTypes.BORROWED, "user", "equip1"),
+            (RelationTypes.LENT, "person1", "equip1"),
+            (RelationTypes.USES, "user", "equip1"),
+            (RelationTypes.USED_FOR, "equip1", "usage1"),
+            (RelationTypes.FOR_DURATION, "usage1", "dur1")
+        ]
+        
+        return text, entities, relations
+
+class BusinessInteractionTemplate(Template):
+    """Specialized template for BUSINESS, SERVES, COSTS relations."""
+    def generate(self):
+        business = random.choice(BUSINESS_TYPES)
+        service = random.choice(["high-quality products", "excellent customer service", "professional consultation", "technical support"])
+        cost = random.choice(["reasonable prices", "$50 service fee", "competitive rates", "premium pricing"])
+        frequency = random.choice(FREQUENCY_DETAILED)
+        
+        text = f"The local {business} serves {service} at {cost}. I visit them {frequency} for their offerings."
+        
+        entities = {
+            "user": (EntityTypes.PRONOUN, "I"),
+            "business1": (EntityTypes.BUSINESS, business),
+            "service1": (EntityTypes.CONCEPT, service),
+            "cost1": (EntityTypes.AMOUNT, cost),
+            "freq1": (EntityTypes.FREQUENCY, frequency)
+        }
+        
+        relations = [
+            (RelationTypes.SERVES, "business1", "service1"),
+            (RelationTypes.COSTS, "service1", "cost1"),
+            (RelationTypes.VISITS, "user", "business1"),
+            (RelationTypes.HAS_FREQUENCY, "user", "freq1")
+        ]
+        
+        return text, entities, relations
+
+class EventParticipationTemplate(Template):
+    """Specialized template for EVENT, PARTICIPATES_IN, ORGANIZES relations."""
+    def generate(self):
+        event = random.choice(EVENTS)
+        role = random.choice(["participant", "organizer", "speaker", "volunteer", "coordinator"])
+        duration = random.choice(DURATIONS)
+        group = random.choice(GROUPS)
+        
+        text = f"I participate in the {event} as a {role} for {duration}. The {group} organizes this event."
+        
+        entities = {
+            "user": (EntityTypes.PRONOUN, "I"),
+            "event1": (EntityTypes.EVENT, event),
+            "role1": (EntityTypes.ROLE, role),
+            "dur1": (EntityTypes.DURATION, duration),
+            "group1": (EntityTypes.GROUP, group)
+        }
+        
+        relations = [
+            (RelationTypes.PARTICIPATES_IN, "user", "event1"),
+            (RelationTypes.HAS_ROLE, "user", "role1"),
+            (RelationTypes.FOR_DURATION, "event1", "dur1"),
+            (RelationTypes.ORGANIZES, "group1", "event1")
+        ]
+        
+        return text, entities, relations
+
+class GroupMembershipTemplate(Template):
+    """Specialized template for GROUP, MEMBER_OF, LEADS relations."""
+    def generate(self):
+        group = random.choice(GROUPS)
+        role = random.choice(["member", "leader", "coordinator", "secretary", "treasurer"])
+        activity = random.choice(ACTIVITIES)
+        duration = random.choice(["6 months", "2 years", "since last year", "recently"])
+        
+        text = f"I am a {role} of the {group} for {duration}. We focus on {activity} as our main activity."
+        
+        entities = {
+            "user": (EntityTypes.PRONOUN, "I"),
+            "group1": (EntityTypes.GROUP, group),
+            "role1": (EntityTypes.ROLE, role),
+            "activity1": (EntityTypes.ACTIVITY, activity),
+            "dur1": (EntityTypes.DURATION, duration)
+        }
+        
+        relations = [
+            (RelationTypes.MEMBER_OF, "user", "group1"),
+            (RelationTypes.HAS_ROLE, "user", "role1"),
+            (RelationTypes.DOES_ACTIVITY, "group1", "activity1"),
+            (RelationTypes.FOR_DURATION, "user", "dur1"),
+            (RelationTypes.LEADS, "user", "group1") if role == "leader" else (RelationTypes.PARTICIPATES_IN, "user", "activity1")
+        ]
+        
+        return text, entities, relations
+
+class FinancialManagementTemplate(Template):
+    """Specialized template for MONEY, BUDGETS_FOR, COSTS, EARNS relations."""
+    def generate(self):
+        money_amount = random.choice(MONEY)
+        purpose = random.choice(["education", "healthcare", "travel", "housing", "retirement", "emergency fund"])
+        earning_source = random.choice(["salary", "consulting", "investments", "side business", "freelancing"])
+        frequency = random.choice(["monthly", "annually", "quarterly", "weekly"])
+        
+        text = f"I budget {money_amount} {frequency} for {purpose}. I earn this through {earning_source}."
+        
+        entities = {
+            "user": (EntityTypes.PRONOUN, "I"),
+            "money1": (EntityTypes.MONEY, money_amount),
+            "purpose1": (EntityTypes.CONCEPT, purpose),
+            "source1": (EntityTypes.ACTIVITY, earning_source),
+            "freq1": (EntityTypes.FREQUENCY, frequency)
+        }
+        
+        relations = [
+            (RelationTypes.BUDGETS_FOR, "user", "purpose1"),
+            (RelationTypes.COSTS, "purpose1", "money1"),
+            (RelationTypes.EARNS, "user", "money1"),
+            (RelationTypes.HAS_FREQUENCY, "user", "freq1")
         ]
         
         return text, entities, relations
@@ -4362,15 +4745,35 @@ def print_statistics(stats: Dict):
 # --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
 
 class BalancedTemplateManager:
-    """Manages template usage tracking for perfectly balanced dataset generation."""
+    """Manages template usage tracking for perfectly balanced dataset generation with two-tier template architecture."""
     
     def __init__(self, first_person_templates: List, third_person_templates: List):
         self.first_person_templates = first_person_templates
         self.third_person_templates = third_person_templates
         self.all_templates = first_person_templates + third_person_templates
         
+        # Two-tier template architecture
+        self.tier2_specialized_templates = [
+            GeopoliticalEntityTemplate,
+            NicknameIdentityTemplate, 
+            PetCareTemplate,
+            VehicleOwnershipTemplate,
+            MediaConsumptionTemplate,
+            IndustryExpertiseTemplate,
+            FoodPreferenceTemplate,
+            RelationshipDynamicsTemplate,
+            EquipmentUsageTemplate,
+            BusinessInteractionTemplate,
+            EventParticipationTemplate,
+            GroupMembershipTemplate,
+            FinancialManagementTemplate
+        ]
+        
+        # Tier 1: Common type templates (all existing templates)
+        self.tier1_common_templates = [t for t in self.all_templates if t not in self.tier2_specialized_templates]
+        
         # Track usage counts for each template
-        self.template_usage_counts = {template.__name__: 0 for template in self.all_templates}
+        self.template_usage_counts = {template.__name__: 0 for template in self.all_templates + self.tier2_specialized_templates}
         
         # Track entity and relation type usage
         self.entity_type_usage = {}
@@ -4395,11 +4798,20 @@ class BalancedTemplateManager:
         self.target_records = 0  # Will be set during generation
         self.generation_phase = "coverage"  # "coverage" or "balanced"
         
-        print(f"🎯 BalancedTemplateManager initialized:")
-        print(f"   - Total templates: {len(self.all_templates)}")
+        # Progressive quota system with hard caps for true balance  
+        self.minimum_quota_per_type = 1  # Allow any coverage to count
+        self.target_quota_per_type = 5   # Lower target for better distribution
+        self.max_quota_per_type = 8      # Strict cap to prevent severe overrepresentation
+        self.absolute_max_quota = 12     # Absolute maximum to prevent any type from dominating
+        
+        print(f"🎯 Two-Tier BalancedTemplateManager initialized:")
+        print(f"   - Tier 1 (Common) templates: {len(self.tier1_common_templates)}")
+        print(f"   - Tier 2 (Specialized) templates: {len(self.tier2_specialized_templates)}")
         print(f"   - Entity types to balance: {len(all_entity_types)}")
         print(f"   - Relation types to balance: {len(all_relation_types)}")
-        print(f"   - Using dynamic frequency capping")
+        print(f"   - Minimum quota per type: {self.minimum_quota_per_type}")
+        print(f"   - Target quota per type: {self.target_quota_per_type}")
+        print(f"   - Using progressive quota system with two-tier template selection")
     
     def get_least_used_template(self, perspective: str = None) -> object:
         """Get the least used template, optionally filtered by perspective."""
@@ -4555,7 +4967,211 @@ class BalancedTemplateManager:
             "overall_balance": overall_balance
         }
     
+    def get_severely_underrepresented_types(self) -> tuple:
+        """Get entity and relation types that are severely underrepresented (below minimum quota)."""
+        underrep_entities = []
+        underrep_relations = []
+        
+        # Find entity types below minimum quota
+        for entity_type, count in self.entity_type_usage.items():
+            if count < self.minimum_quota_per_type:
+                underrep_entities.append(entity_type)
+        
+        # Find relation types below minimum quota  
+        for relation_type, count in self.relation_type_usage.items():
+            if count < self.minimum_quota_per_type:
+                underrep_relations.append(relation_type)
+        
+        return underrep_entities, underrep_relations
+
+    def should_force_tier2_selection(self) -> bool:
+        """Determine if we should force Tier 2 template selection based on severe imbalance."""
+        severely_underrep_entities, severely_underrep_relations = self.get_severely_underrepresented_types()
+        
+        # Always prefer Tier 2 when there are any severely underrepresented types
+        if len(severely_underrep_entities) > 5:  # More than 5 entities severely underrep
+            return True
+        if len(severely_underrep_relations) > 10:  # More than 10 relations severely underrep  
+            return True
+            
+        return False
+
+    def get_zero_occurrence_types(self) -> tuple:
+        """Get entity and relation types that have zero occurrences."""
+        zero_entities = []
+        zero_relations = []
+        
+        for entity_type, count in self.entity_type_usage.items():
+            if count == 0:
+                zero_entities.append(entity_type)
+        
+        for relation_type, count in self.relation_type_usage.items():
+            if count == 0:
+                zero_relations.append(relation_type)
+        
+        return zero_entities, zero_relations
+
     def select_next_template(self, perspective: str = None) -> object:
+        """Two-tier template selection with aggressive gap-filling strategy."""
+        # Get all underrepresented types
+        severely_underrep_entities, severely_underrep_relations = self.get_severely_underrepresented_types()
+        zero_entities, zero_relations = self.get_zero_occurrence_types()
+        
+        # Ultra-aggressive prioritization of zero-occurrence types
+        if zero_entities or zero_relations:
+            print(f"   🔥 ZERO-GAP FILLING: {len(zero_entities)} uncovered entities, {len(zero_relations)} uncovered relations")
+            tier2_result = self._select_from_tier2_templates(zero_entities + severely_underrep_entities, zero_relations + severely_underrep_relations)
+            if tier2_result:
+                return tier2_result
+        
+        # Decision logic for tier selection - prioritize Tier 2 aggressively
+        force_tier2 = self.should_force_tier2_selection()
+        use_tier2_preference = len(severely_underrep_entities) > 3 or len(severely_underrep_relations) > 8
+        
+        if force_tier2 or use_tier2_preference:
+            # Prioritize Tier 2 selection when many types are underrepresented  
+            print(f"   🎯 PRIORITIZING Tier 2: {len(severely_underrep_entities)} severely underrep entities, {len(severely_underrep_relations)} severely underrep relations")
+            tier2_result = self._select_from_tier2_templates(severely_underrep_entities, severely_underrep_relations)
+            if tier2_result:
+                return tier2_result
+        
+        # Only use Tier 1 if no severe imbalances exist
+        if len(severely_underrep_entities) <= 3 and len(severely_underrep_relations) <= 8:
+            tier1_result = self._select_from_tier1_templates(perspective)
+            if tier1_result:
+                return tier1_result
+        
+        # Final fallback: get any working template
+        print("Warning: Using fallback template selection")
+        return self.get_least_used_template(perspective)
+
+    def _select_from_tier2_templates(self, underrep_entities: List, underrep_relations: List) -> object:
+        """Select from Tier 2 specialized templates that can produce needed rare types."""
+        template_scores = {}
+        
+        for template_class in self.tier2_specialized_templates:
+            try:
+                # Test generate to see what this template covers
+                template = template_class(0, datetime.now(), "first_person")
+                _, entities_meta, relations_meta = template.generate()
+                
+                score = 0
+                
+                # High priority for templates that produce severely underrepresented types
+                for _, (entity_type, _) in entities_meta.items():
+                    if entity_type in underrep_entities:
+                        current_usage = self.entity_type_usage.get(entity_type, 0)
+                        if current_usage == 0:
+                            score += 1000  # Highest priority for uncovered types
+                        elif current_usage < self.minimum_quota_per_type:
+                            score += 500   # Very high priority for severely underrepresented
+                        
+                for rel_type, _, _ in relations_meta:
+                    if rel_type in underrep_relations:
+                        current_usage = self.relation_type_usage.get(rel_type, 0)
+                        if current_usage == 0:
+                            score += 1000  # Highest priority for uncovered types
+                        elif current_usage < self.minimum_quota_per_type:
+                            score += 500   # Very high priority for severely underrepresented
+                
+                # Even if no specific underrep types, give some score for diversity
+                if score == 0:
+                    score = 10  # Base score for any Tier 2 template
+                
+                # Template effectiveness bonus (less used specialized templates get bonus)
+                usage_count = self.template_usage_counts.get(template_class.__name__, 0)
+                if usage_count < 5:
+                    score += 100  # Bonus for less used specialized templates
+                
+                template_scores[template_class] = score
+                
+            except Exception as e:
+                print(f"Warning: Tier 2 template {template_class.__name__} failed: {e}")
+                template_scores[template_class] = 1  # Low score for failing templates
+        
+        # Select best Tier 2 template
+        if template_scores:
+            max_score = max(template_scores.values())
+            if max_score >= 1:  # Lower threshold - use any working Tier 2 template
+                best_template = max(template_scores.keys(), key=lambda t: template_scores[t])
+                return best_template
+        
+        return None
+
+    def _select_from_tier1_templates(self, perspective: str = None) -> object:
+        """Select from Tier 1 common templates with absolute caps on overrepresentation."""
+        if perspective == "first_person":
+            templates = [t for t in self.first_person_templates if t in self.tier1_common_templates]
+        elif perspective == "third_person":
+            templates = [t for t in self.third_person_templates if t in self.tier1_common_templates]
+        else:
+            templates = self.tier1_common_templates
+        
+        # Ultra-strict selection logic with absolute caps
+        template_scores = {}
+        
+        for template_class in templates:
+            try:
+                template = template_class(0, datetime.now(), perspective or "first_person")
+                _, entities_meta, relations_meta = template.generate()
+                
+                score = 0
+                violates_absolute_cap = False
+                
+                # Absolute prohibition of templates that would exceed caps
+                for _, (entity_type, _) in entities_meta.items():
+                    current_usage = self.entity_type_usage.get(entity_type, 0)
+                    if current_usage >= self.absolute_max_quota:
+                        violates_absolute_cap = True
+                        score = -100000  # Absolute rejection
+                        break
+                    elif current_usage >= self.max_quota_per_type:
+                        score -= 5000  # Severe penalty
+                    elif current_usage > self.target_quota_per_type:
+                        score -= (current_usage - self.target_quota_per_type) * 200
+                    elif current_usage < self.target_quota_per_type:
+                        score += (self.target_quota_per_type - current_usage) * 50
+                
+                if not violates_absolute_cap:
+                    for rel_type, _, _ in relations_meta:
+                        current_usage = self.relation_type_usage.get(rel_type, 0)
+                        if current_usage >= self.absolute_max_quota:
+                            violates_absolute_cap = True
+                            score = -100000  # Absolute rejection
+                            break
+                        elif current_usage >= self.max_quota_per_type:
+                            score -= 5000  # Severe penalty
+                        elif current_usage > self.target_quota_per_type:
+                            score -= (current_usage - self.target_quota_per_type) * 200
+                        elif current_usage < self.target_quota_per_type:
+                            score += (self.target_quota_per_type - current_usage) * 50
+                
+                # Template usage penalty
+                template_usage = self.template_usage_counts.get(template_class.__name__, 0)
+                if template_usage > 6:
+                    score *= 0.1
+                elif template_usage > 4:
+                    score *= 0.4
+                
+                template_scores[template_class] = score
+                
+            except Exception:
+                template_scores[template_class] = 1
+        
+        # Only select templates with positive scores (no cap violations)
+        if template_scores:
+            max_score = max(template_scores.values())
+            if max_score > 0:  # Only use templates that won't violate caps
+                best_template = max(template_scores.keys(), key=lambda t: template_scores[t])
+                return best_template
+        
+        return None
+
+    def _try_tier2_selection(self, underrep_entities: List, underrep_relations: List) -> object:
+        """Try to select a Tier 2 template, return None if no good match."""
+        return self._select_from_tier2_templates(underrep_entities, underrep_relations)
+
+    def select_next_template_old(self, perspective: str = None) -> object:
         """Enhanced template selection with strict frequency capping and underrepresented type prioritization."""
         if perspective == "first_person":
             templates = self.first_person_templates
@@ -4811,7 +5427,21 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
         FirstPersonLifeEventsTemplate,
         FirstPersonOrganizationContextTemplate,
         FirstPersonPlatformContextTemplate,
-        FirstPersonFunctionWordTemplate
+        FirstPersonFunctionWordTemplate,
+        # Tier 2 Specialized Templates  
+        GeopoliticalEntityTemplate,
+        NicknameIdentityTemplate, 
+        PetCareTemplate,
+        VehicleOwnershipTemplate,
+        MediaConsumptionTemplate,
+        IndustryExpertiseTemplate,
+        FoodPreferenceTemplate,
+        RelationshipDynamicsTemplate,
+        EquipmentUsageTemplate,
+        BusinessInteractionTemplate,
+        EventParticipationTemplate,
+        GroupMembershipTemplate,
+        FinancialManagementTemplate
     ]
     
     third_person_templates = [
