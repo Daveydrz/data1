@@ -1,0 +1,4 @@
+# Dataset files
+*.json
+__pycache__/
+*.pyc
