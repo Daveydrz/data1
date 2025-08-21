@@ -4798,9 +4798,10 @@ class BalancedTemplateManager:
         self.target_records = 0  # Will be set during generation
         self.generation_phase = "coverage"  # "coverage" or "balanced"
         
-        # Progressive quota system
-        self.minimum_quota_per_type = 5  # Minimum occurrences for each type
-        self.target_quota_per_type = 15  # Target occurrences for balanced distribution
+        # Progressive quota system - even more aggressive for true balance
+        self.minimum_quota_per_type = 1  # Allow any coverage to count
+        self.target_quota_per_type = 5   # Lower target for better distribution
+        self.max_quota_per_type = 12     # Cap to prevent severe overrepresentation
         
         print(f"🎯 Two-Tier BalancedTemplateManager initialized:")
         print(f"   - Tier 1 (Common) templates: {len(self.tier1_common_templates)}")
@@ -4986,42 +4987,61 @@ class BalancedTemplateManager:
         """Determine if we should force Tier 2 template selection based on severe imbalance."""
         severely_underrep_entities, severely_underrep_relations = self.get_severely_underrepresented_types()
         
-        # Force Tier 2 if many types are severely underrepresented
-        if len(severely_underrep_entities) > self.total_entities * 0.3:  # More than 30% of entities severely underrep
+        # Always prefer Tier 2 when there are any severely underrepresented types
+        if len(severely_underrep_entities) > 5:  # More than 5 entities severely underrep
             return True
-        if len(severely_underrep_relations) > self.total_relations * 0.4:  # More than 40% of relations severely underrep
+        if len(severely_underrep_relations) > 10:  # More than 10 relations severely underrep  
             return True
             
         return False
 
+    def get_zero_occurrence_types(self) -> tuple:
+        """Get entity and relation types that have zero occurrences."""
+        zero_entities = []
+        zero_relations = []
+        
+        for entity_type, count in self.entity_type_usage.items():
+            if count == 0:
+                zero_entities.append(entity_type)
+        
+        for relation_type, count in self.relation_type_usage.items():
+            if count == 0:
+                zero_relations.append(relation_type)
+        
+        return zero_entities, zero_relations
+
     def select_next_template(self, perspective: str = None) -> object:
-        """Two-tier template selection: prioritize specialized templates for rare types, common templates for frequent types."""
-        # Get severely underrepresented types
+        """Two-tier template selection with aggressive gap-filling strategy."""
+        # Get all underrepresented types
         severely_underrep_entities, severely_underrep_relations = self.get_severely_underrepresented_types()
+        zero_entities, zero_relations = self.get_zero_occurrence_types()
         
-        # Decision logic for tier selection
+        # Ultra-aggressive prioritization of zero-occurrence types
+        if zero_entities or zero_relations:
+            print(f"   🔥 ZERO-GAP FILLING: {len(zero_entities)} uncovered entities, {len(zero_relations)} uncovered relations")
+            tier2_result = self._select_from_tier2_templates(zero_entities + severely_underrep_entities, zero_relations + severely_underrep_relations)
+            if tier2_result:
+                return tier2_result
+        
+        # Decision logic for tier selection - prioritize Tier 2 aggressively
         force_tier2 = self.should_force_tier2_selection()
+        use_tier2_preference = len(severely_underrep_entities) > 3 or len(severely_underrep_relations) > 8
         
-        if force_tier2 and (severely_underrep_entities or severely_underrep_relations):
-            # Force Tier 2 selection when many types are severely underrepresented
-            print(f"   🎯 FORCING Tier 2: {len(severely_underrep_entities)} severely underrep entities, {len(severely_underrep_relations)} severely underrep relations")
+        if force_tier2 or use_tier2_preference:
+            # Prioritize Tier 2 selection when many types are underrepresented  
+            print(f"   🎯 PRIORITIZING Tier 2: {len(severely_underrep_entities)} severely underrep entities, {len(severely_underrep_relations)} severely underrep relations")
             tier2_result = self._select_from_tier2_templates(severely_underrep_entities, severely_underrep_relations)
             if tier2_result:
                 return tier2_result
         
-        # Standard logic: try Tier 2 first if there are underrepresented types
-        if severely_underrep_entities or severely_underrep_relations:
-            tier2_template = self._try_tier2_selection(severely_underrep_entities, severely_underrep_relations)
-            if tier2_template:
-                return tier2_template
-        
-        # Fall back to Tier 1 templates for common types or when Tier 2 fails
-        tier1_result = self._select_from_tier1_templates(perspective)
-        if tier1_result:
-            return tier1_result
+        # Only use Tier 1 if no severe imbalances exist
+        if len(severely_underrep_entities) <= 3 and len(severely_underrep_relations) <= 8:
+            tier1_result = self._select_from_tier1_templates(perspective)
+            if tier1_result:
+                return tier1_result
         
         # Final fallback: get any working template
-        print("Warning: Both tiers failed, using least used template as fallback")
+        print("Warning: Using fallback template selection")
         return self.get_least_used_template(perspective)
 
     def _select_from_tier2_templates(self, underrep_entities: List, underrep_relations: List) -> object:
@@ -5078,7 +5098,7 @@ class BalancedTemplateManager:
         return None
 
     def _select_from_tier1_templates(self, perspective: str = None) -> object:
-        """Select from Tier 1 common templates using existing balanced logic."""
+        """Select from Tier 1 common templates with strict overrepresentation penalties."""
         if perspective == "first_person":
             templates = [t for t in self.first_person_templates if t in self.tier1_common_templates]
         elif perspective == "third_person":
@@ -5086,7 +5106,7 @@ class BalancedTemplateManager:
         else:
             templates = self.tier1_common_templates
         
-        # Use existing selection logic for Tier 1 templates
+        # Very strict selection logic to prevent overrepresentation
         template_scores = {}
         
         for template_class in templates:
@@ -5095,36 +5115,52 @@ class BalancedTemplateManager:
                 _, entities_meta, relations_meta = template.generate()
                 
                 score = 0
+                severely_overrepresented = False
                 
-                # Standard scoring for common types
+                # Extremely harsh penalties for overrepresented types
                 for _, (entity_type, _) in entities_meta.items():
                     current_usage = self.entity_type_usage.get(entity_type, 0)
-                    if current_usage < self.target_quota_per_type:
-                        score += max(1, self.target_quota_per_type - current_usage)
+                    if current_usage >= self.max_quota_per_type:
+                        severely_overrepresented = True
+                        score = -10000  # Massive penalty
+                        break
+                    elif current_usage > self.target_quota_per_type:
+                        score -= (current_usage - self.target_quota_per_type) * 100
+                    elif current_usage < self.target_quota_per_type:
+                        score += (self.target_quota_per_type - current_usage) * 10
                 
-                for rel_type, _, _ in relations_meta:
-                    current_usage = self.relation_type_usage.get(rel_type, 0)
-                    if current_usage < self.target_quota_per_type:
-                        score += max(1, self.target_quota_per_type - current_usage)
+                if not severely_overrepresented:
+                    for rel_type, _, _ in relations_meta:
+                        current_usage = self.relation_type_usage.get(rel_type, 0)
+                        if current_usage >= self.max_quota_per_type:
+                            severely_overrepresented = True
+                            score = -10000  # Massive penalty
+                            break
+                        elif current_usage > self.target_quota_per_type:
+                            score -= (current_usage - self.target_quota_per_type) * 100
+                        elif current_usage < self.target_quota_per_type:
+                            score += (self.target_quota_per_type - current_usage) * 10
                 
-                # Penalty for overused templates
+                # Template usage penalty
                 template_usage = self.template_usage_counts.get(template_class.__name__, 0)
-                if template_usage > 20:
-                    score *= 0.2
-                elif template_usage > 10:
-                    score *= 0.5
+                if template_usage > 8:
+                    score *= 0.1
+                elif template_usage > 5:
+                    score *= 0.3
                 
                 template_scores[template_class] = score
                 
             except Exception:
                 template_scores[template_class] = 1
         
-        # Select best Tier 1 template
+        # Only select templates with positive scores (no overrepresentation)
         if template_scores:
-            best_template = max(template_scores.keys(), key=lambda t: template_scores[t])
-            return best_template
-        else:
-            return self.get_least_used_template(perspective)
+            max_score = max(template_scores.values())
+            if max_score > 0:  # Only use templates that won't cause overrepresentation
+                best_template = max(template_scores.keys(), key=lambda t: template_scores[t])
+                return best_template
+        
+        return None
 
     def _try_tier2_selection(self, underrep_entities: List, underrep_relations: List) -> object:
         """Try to select a Tier 2 template, return None if no good match."""
