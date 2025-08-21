@@ -4364,12 +4364,6 @@ def print_statistics(stats: Dict):
 class BalancedTemplateManager:
     """Manages template usage tracking for perfectly balanced dataset generation."""
     
-    # Perfect Balance Quota System - Much more aggressive for DeBERTa training
-    MINIMUM_QUOTA_PER_TYPE = 250   # Every type gets substantial representation  
-    TARGET_QUOTA_PER_TYPE = 500    # Target for good balance
-    PERFECT_QUOTA_PER_TYPE = 600   # Perfect balance target  
-    MAXIMUM_QUOTA_PER_TYPE = 700   # Hard cap to prevent overrepresentation
-    
     def __init__(self, first_person_templates: List, third_person_templates: List):
         self.first_person_templates = first_person_templates
         self.third_person_templates = third_person_templates
@@ -4401,11 +4395,17 @@ class BalancedTemplateManager:
         self.target_records = 0  # Will be set during generation
         self.generation_phase = "coverage"  # "coverage" or "balanced"
         
+        # Adaptive quota system - will be calculated based on dataset size
+        self.MINIMUM_QUOTA_PER_TYPE = 0
+        self.TARGET_QUOTA_PER_TYPE = 0  
+        self.PERFECT_QUOTA_PER_TYPE = 0
+        self.MAXIMUM_QUOTA_PER_TYPE = 0
+        
         print(f"🎯 BalancedTemplateManager initialized:")
         print(f"   - Total templates: {len(self.all_templates)}")
         print(f"   - Entity types to balance: {len(all_entity_types)}")
         print(f"   - Relation types to balance: {len(all_relation_types)}")
-        print(f"   - PERFECT BALANCE quotas: MIN={self.MINIMUM_QUOTA_PER_TYPE}, TARGET={self.TARGET_QUOTA_PER_TYPE}, PERFECT={self.PERFECT_QUOTA_PER_TYPE}, MAX={self.MAXIMUM_QUOTA_PER_TYPE}")
+        print(f"   - Adaptive quotas will be calculated based on dataset size")
     
     def get_quota(self, type_name: str, current_count: int) -> int:
         """Get the current quota for a type based on its current count."""
@@ -4527,9 +4527,44 @@ class BalancedTemplateManager:
             self.covered_relations.add(rel_type)
     
     def set_generation_parameters(self, target_records: int, phase: str = "coverage"):
-        """Set generation parameters for frequency capping calculations."""
+        """Set generation parameters and calculate adaptive quotas based on dataset size."""
         self.target_records = target_records
         self.generation_phase = phase
+        
+        # Calculate adaptive quotas based on dataset size
+        # Assume ~6 entities and ~5 relations per record on average
+        expected_total_entities = target_records * 6
+        expected_total_relations = target_records * 5
+        
+        # Calculate perfect balance targets
+        perfect_entities_per_type = expected_total_entities // self.total_entities
+        perfect_relations_per_type = expected_total_relations // self.total_relations
+        
+        # Set adaptive quotas with appropriate ranges
+        # For smaller datasets, quotas should be proportionally smaller and much more restrictive
+        if target_records <= 1000:
+            # Small dataset - extremely tight balance for perfect DeBERTa training
+            self.MINIMUM_QUOTA_PER_TYPE = max(1, perfect_entities_per_type // 8)  # Very low minimum
+            self.TARGET_QUOTA_PER_TYPE = max(3, perfect_entities_per_type // 4)   # Low target
+            self.PERFECT_QUOTA_PER_TYPE = max(5, int(perfect_entities_per_type * 0.7))  # Reasonable perfect
+            self.MAXIMUM_QUOTA_PER_TYPE = max(8, int(perfect_entities_per_type * 1.5))  # Tight maximum
+        elif target_records <= 10000:
+            # Medium dataset - balanced approach
+            self.MINIMUM_QUOTA_PER_TYPE = max(5, perfect_entities_per_type // 6)
+            self.TARGET_QUOTA_PER_TYPE = max(15, perfect_entities_per_type // 3)
+            self.PERFECT_QUOTA_PER_TYPE = max(25, int(perfect_entities_per_type * 0.8))
+            self.MAXIMUM_QUOTA_PER_TYPE = max(40, int(perfect_entities_per_type * 1.4))
+        else:
+            # Large dataset - more aggressive perfect balance
+            self.MINIMUM_QUOTA_PER_TYPE = max(50, perfect_entities_per_type // 4)
+            self.TARGET_QUOTA_PER_TYPE = max(150, perfect_entities_per_type // 2)
+            self.PERFECT_QUOTA_PER_TYPE = max(250, int(perfect_entities_per_type * 0.8))
+            self.MAXIMUM_QUOTA_PER_TYPE = max(400, int(perfect_entities_per_type * 1.25))
+        
+        print(f"📊 Adaptive Quotas for {target_records} records:")
+        print(f"   - Expected ~{perfect_entities_per_type} entities per type, ~{perfect_relations_per_type} relations per type")
+        print(f"   - MIN: {self.MINIMUM_QUOTA_PER_TYPE}, TARGET: {self.TARGET_QUOTA_PER_TYPE}")
+        print(f"   - PERFECT: {self.PERFECT_QUOTA_PER_TYPE}, MAX: {self.MAXIMUM_QUOTA_PER_TYPE}")
     
     def get_frequency_cap(self, type_name: str, is_entity: bool = True) -> int:
         """Calculate strict frequency cap based on target equal distribution."""
@@ -4650,7 +4685,7 @@ class BalancedTemplateManager:
         }
     
     def select_next_template(self, perspective: str = None) -> object:
-        """Enhanced template selection with strict quota enforcement and four-phase strategy."""
+        """Enhanced template selection with strict quota enforcement and emergency balance correction."""
         if perspective == "first_person":
             templates = self.first_person_templates
         elif perspective == "third_person":
@@ -4658,7 +4693,25 @@ class BalancedTemplateManager:
         else:
             templates = self.all_templates
         
-        # Four-phase system for perfect balance
+        # Emergency balance correction: if too many types are way overrepresented, force balance
+        entity_counts = list(self.entity_type_usage.values())
+        relation_counts = list(self.relation_type_usage.values())
+        
+        if entity_counts and relation_counts:
+            max_entity = max(entity_counts)
+            max_relation = max(relation_counts)
+            min_entity = min([c for c in entity_counts if c > 0] + [1])
+            min_relation = min([c for c in relation_counts if c > 0] + [1])
+            
+            # If ratio is extreme (>100:1), force emergency balance mode
+            entity_ratio = max_entity / min_entity if min_entity > 0 else float('inf')
+            relation_ratio = max_relation / min_relation if min_relation > 0 else float('inf')
+            
+            if entity_ratio > 100 or relation_ratio > 100:
+                print(f"🚨 EMERGENCY BALANCE MODE: Entity ratio {entity_ratio:.1f}:1, Relation ratio {relation_ratio:.1f}:1")
+                return self._emergency_balance_selection(templates, perspective)
+        
+        # Normal four-phase system
         entities_needing_min, relations_needing_min = self.get_types_needing_minimum_quota()
         entities_needing_target, relations_needing_target = self.get_types_needing_target_quota()
         entities_needing_perfect, relations_needing_perfect = self.get_types_needing_perfect_quota()
@@ -4677,7 +4730,6 @@ class BalancedTemplateManager:
         template_scores = {}
         
         if current_phase == "coverage":
-            # Phase 1: Only templates producing types below minimum quota
             print(f"📍 Phase 1 (Coverage): Seeking {len(entities_needing_min)} entities, {len(relations_needing_min)} relations needing minimum quota")
             
             for template_class in templates:
@@ -4685,7 +4737,6 @@ class BalancedTemplateManager:
                 template_scores[template_class] = score
                 
         elif current_phase == "minimum_quotas":
-            # Phase 2: Only templates producing types below target quota
             print(f"📍 Phase 2 (Minimum Quotas): Seeking {len(entities_needing_target)} entities, {len(relations_needing_target)} relations needing target quota")
             
             for template_class in templates:
@@ -4693,7 +4744,6 @@ class BalancedTemplateManager:
                 template_scores[template_class] = score
                 
         elif current_phase == "perfect_balance":
-            # Phase 3: Only templates producing types below perfect quota
             print(f"📍 Phase 3 (Perfect Balance): Seeking {len(entities_needing_perfect)} entities, {len(relations_needing_perfect)} relations needing perfect quota")
             
             for template_class in templates:
@@ -4701,29 +4751,81 @@ class BalancedTemplateManager:
                 template_scores[template_class] = score
                 
         else:
-            # Phase 4: Strict enforcement - only allow templates that don't break balance
             print(f"📍 Phase 4 (Strict Enforcement): Maintaining perfect balance")
             
             for template_class in templates:
                 score = self._score_template_for_strict_enforcement(template_class, perspective)
                 template_scores[template_class] = score
         
-        # Select template with highest score
+        # Select template with highest score, with strict filtering
         if template_scores:
-            # Get best scoring templates
-            max_score = max(template_scores.values())
-            best_templates = [t for t, s in template_scores.items() if s == max_score]
+            # Filter out templates with negative or very low scores
+            positive_scores = {t: s for t, s in template_scores.items() if s > 50}
             
-            if max_score > 0:
-                # If we have templates with positive scores, use the best one
+            if positive_scores:
+                max_score = max(positive_scores.values())
+                best_templates = [t for t, s in positive_scores.items() if s == max_score]
                 return random.choice(best_templates)
             else:
-                # If all scores are 0 or negative, find least harmful template
-                print(f"⚠️  All templates scored poorly, selecting least harmful")
-                least_harmful_score = max(template_scores.values())
-                least_harmful_templates = [t for t, s in template_scores.items() if s == least_harmful_score]
-                return random.choice(least_harmful_templates)
+                # All templates scored poorly - use emergency selection
+                print(f"⚠️  All templates scored poorly, using emergency selection")
+                return self._emergency_balance_selection(templates, perspective)
         else:
+            return self.get_least_used_template(perspective)
+    
+    def _emergency_balance_selection(self, templates, perspective):
+        """Emergency selection that forces balance by finding templates that help the most underrepresented types."""
+        try:
+            # Find the most underrepresented entity and relation types
+            entity_counts = list(self.entity_type_usage.values())
+            relation_counts = list(self.relation_type_usage.values())
+            
+            if not entity_counts or not relation_counts:
+                return self.get_least_used_template(perspective)
+            
+            # Find types with minimum counts
+            min_entity_count = min([c for c in entity_counts if c >= 0])
+            min_relation_count = min([c for c in relation_counts if c >= 0])
+            
+            most_needed_entities = [et for et, count in self.entity_type_usage.items() if count == min_entity_count]
+            most_needed_relations = [rt for rt, count in self.relation_type_usage.items() if count == min_relation_count]
+            
+            # Score templates based on how many desperately needed types they produce
+            best_templates = []
+            best_score = -1
+            
+            for template_class in templates:
+                try:
+                    template = template_class(0, datetime.now(), perspective or "first_person")
+                    _, entities_meta, relations_meta = template.generate()
+                    
+                    score = 0
+                    
+                    # Count how many desperately needed entities this template produces
+                    for _, (entity_type, _) in entities_meta.items():
+                        if entity_type in most_needed_entities:
+                            score += 1000
+                    
+                    # Count how many desperately needed relations this template produces
+                    for rel_type, _, _ in relations_meta:
+                        if rel_type in most_needed_relations:
+                            score += 1000
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_templates = [template_class]
+                    elif score == best_score and score > 0:
+                        best_templates.append(template_class)
+                        
+                except:
+                    continue
+            
+            if best_templates:
+                return random.choice(best_templates)
+            else:
+                return self.get_least_used_template(perspective)
+                
+        except:
             return self.get_least_used_template(perspective)
     
     def _score_template_for_coverage(self, template_class, entities_needing_min, relations_needing_min, perspective):
@@ -4733,35 +4835,46 @@ class BalancedTemplateManager:
             _, entities_meta, relations_meta = template.generate()
             
             score = 100  # Start with positive base score
+            has_needed_type = False  # Track if template produces ANY needed type
             
-            # High score for producing entities that need minimum quota
+            # EXTREMELY high score for producing entities that need minimum quota
             for _, (entity_type, _) in entities_meta.items():
                 if entity_type in entities_needing_min:
-                    score += 5000  # Very high priority for uncovered/under-minimum types
+                    score += 50000  # Massive priority for needed types
+                    has_needed_type = True
                 else:
                     current_usage = self.entity_type_usage.get(entity_type, 0)
                     if current_usage >= self.MAXIMUM_QUOTA_PER_TYPE:
-                        score -= 2000  # Penalty for overrepresented types
+                        score -= 100000  # Completely reject templates producing overrepresented types
                     elif current_usage >= self.TARGET_QUOTA_PER_TYPE:
-                        score -= 100   # Light penalty for types at target
+                        score -= 10000   # Heavy penalty for types at target
+                    elif current_usage >= self.MINIMUM_QUOTA_PER_TYPE:
+                        score -= 1000    # Moderate penalty for types at minimum
             
-            # High score for producing relations that need minimum quota
+            # EXTREMELY high score for producing relations that need minimum quota
             for rel_type, _, _ in relations_meta:
                 if rel_type in relations_needing_min:
-                    score += 5000  # Very high priority for uncovered/under-minimum types
+                    score += 50000  # Massive priority for needed types
+                    has_needed_type = True
                 else:
                     current_usage = self.relation_type_usage.get(rel_type, 0)
                     if current_usage >= self.MAXIMUM_QUOTA_PER_TYPE:
-                        score -= 2000  # Penalty for overrepresented types
+                        score -= 100000  # Completely reject templates producing overrepresented types
                     elif current_usage >= self.TARGET_QUOTA_PER_TYPE:
-                        score -= 100   # Light penalty for types at target
+                        score -= 10000   # Heavy penalty for types at target
+                    elif current_usage >= self.MINIMUM_QUOTA_PER_TYPE:
+                        score -= 1000    # Moderate penalty for types at minimum
             
-            # If very few types need help, be less picky
+            # If template doesn't produce ANY needed type, give it a very low score
+            if not has_needed_type:
+                score = max(score, 1)  # Almost zero score if not helpful
+            
+            # Emergency fallback: if very few types need help, be more lenient
             total_needing_help = len(entities_needing_min) + len(relations_needing_min)
             if total_needing_help <= 5:
-                score = max(score, 50)  # Ensure minimum positive score when almost done
+                score = max(score, 100)  # Ensure some positive score when almost done
             
-            return max(score, 10)  # Always ensure some positive score
+            return score
             
         except Exception:
             return 10  # Small positive score for failed templates
@@ -4773,35 +4886,46 @@ class BalancedTemplateManager:
             _, entities_meta, relations_meta = template.generate()
             
             score = 100  # Start with positive base score
+            has_needed_type = False
             
-            # High score for producing entities that need target quota
+            # Very high score for producing entities that need target quota
             for _, (entity_type, _) in entities_meta.items():
                 if entity_type in entities_needing_target:
-                    score += 2000  # High priority for types needing target quota
+                    score += 20000  # High priority for types needing target quota
+                    has_needed_type = True
                 else:
                     current_usage = self.entity_type_usage.get(entity_type, 0)
                     if current_usage >= self.MAXIMUM_QUOTA_PER_TYPE:
-                        score -= 1500  # Penalty for overrepresented types
+                        score -= 50000  # Massive penalty for overrepresented types
+                    elif current_usage >= self.PERFECT_QUOTA_PER_TYPE:
+                        score -= 5000   # Large penalty for types over perfect quota
                     elif current_usage >= self.TARGET_QUOTA_PER_TYPE:
-                        score -= 100   # Light penalty for types at target
+                        score -= 1000   # Penalty for types at target
             
-            # High score for producing relations that need target quota
+            # Very high score for producing relations that need target quota
             for rel_type, _, _ in relations_meta:
                 if rel_type in relations_needing_target:
-                    score += 2000  # High priority for types needing target quota
+                    score += 20000  # High priority for types needing target quota
+                    has_needed_type = True
                 else:
                     current_usage = self.relation_type_usage.get(rel_type, 0)
                     if current_usage >= self.MAXIMUM_QUOTA_PER_TYPE:
-                        score -= 1500  # Penalty for overrepresented types
+                        score -= 50000  # Massive penalty for overrepresented types
+                    elif current_usage >= self.PERFECT_QUOTA_PER_TYPE:
+                        score -= 5000   # Large penalty for types over perfect quota
                     elif current_usage >= self.TARGET_QUOTA_PER_TYPE:
-                        score -= 100   # Light penalty for types at target
+                        score -= 1000   # Penalty for types at target
             
-            # If very few types need help, be less picky
+            # If template doesn't produce ANY needed type, very low score
+            if not has_needed_type:
+                score = max(score, 10)
+            
+            # Emergency fallback when few types need help
             total_needing_help = len(entities_needing_target) + len(relations_needing_target)
             if total_needing_help <= 10:
-                score = max(score, 50)  # Ensure minimum positive score when almost done
+                score = max(score, 100)  # Ensure some positive score when almost done
             
-            return max(score, 10)  # Always ensure some positive score
+            return score
             
         except Exception:
             return 10  # Small positive score for failed templates
