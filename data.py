@@ -4389,10 +4389,17 @@ class BalancedTemplateManager:
         self.covered_entities = set()
         self.covered_relations = set()
         
+        # Frequency capping and balance tracking
+        self.total_entities = len(all_entity_types)
+        self.total_relations = len(all_relation_types)
+        self.target_records = 0  # Will be set during generation
+        self.generation_phase = "coverage"  # "coverage" or "balanced"
+        
         print(f"🎯 BalancedTemplateManager initialized:")
         print(f"   - Total templates: {len(self.all_templates)}")
         print(f"   - Entity types to balance: {len(all_entity_types)}")
         print(f"   - Relation types to balance: {len(all_relation_types)}")
+        print(f"   - Using dynamic frequency capping")
     
     def get_least_used_template(self, perspective: str = None) -> object:
         """Get the least used template, optionally filtered by perspective."""
@@ -4425,8 +4432,111 @@ class BalancedTemplateManager:
             self.relation_type_usage[rel_type] = self.relation_type_usage.get(rel_type, 0) + 1
             self.covered_relations.add(rel_type)
     
+    def set_generation_parameters(self, target_records: int, phase: str = "coverage"):
+        """Set generation parameters for frequency capping calculations."""
+        self.target_records = target_records
+        self.generation_phase = phase
+    
+    def get_frequency_cap(self, type_name: str, is_entity: bool = True) -> int:
+        """Calculate dynamic frequency cap based on current usage and target distribution."""
+        if self.target_records == 0:
+            return float('inf')  # No cap if target not set
+        
+        # Dynamic frequency capping based on current usage and remaining records
+        if is_entity:
+            current_usage = self.entity_type_usage.get(type_name, 0)
+            ideal_usage = self.target_records // self.total_entities  # ~14.7 for 1000 records
+        else:
+            current_usage = self.relation_type_usage.get(type_name, 0)
+            ideal_usage = self.target_records // self.total_relations  # ~9.6 for 1000 records
+        
+        if self.generation_phase == "coverage":
+            # During coverage phase, allow more flexibility but not too much
+            return max(ideal_usage * 2, 30)
+        else:
+            # During balanced phase, enforce strict dynamic caps
+            # For 1000 records: ideal_usage is ~15 for entities, ~10 for relations
+            max_allowed = ideal_usage + 10  # Allow ideal + small buffer (e.g., 25 for entities)
+            
+            # If already over the max allowed, allow only minimal increases
+            if current_usage >= max_allowed:
+                return current_usage + 1  # Allow only 1 more occurrence
+            else:
+                return max_allowed
+    
+    def is_frequency_capped(self, type_name: str, is_entity: bool = True) -> bool:
+        """Check if a type has reached its frequency cap."""
+        current_usage = (self.entity_type_usage if is_entity else self.relation_type_usage).get(type_name, 0)
+        cap = self.get_frequency_cap(type_name, is_entity)
+        return current_usage >= cap
+    
+    def get_distribution_gap_score(self, type_name: str, is_entity: bool = True) -> float:
+        """Calculate how underrepresented a type is (higher score = more underrepresented)."""
+        current_usage = (self.entity_type_usage if is_entity else self.relation_type_usage).get(type_name, 0)
+        total_types = self.total_entities if is_entity else self.total_relations
+        
+        if self.target_records == 0:
+            return 1.0
+        
+        # Ideal usage would be roughly target_records / total_types
+        ideal_usage = max(1, self.target_records // total_types)
+        
+        # Calculate what percentage of ideal this type has
+        if ideal_usage == 0:
+            usage_ratio = float('inf') if current_usage > 0 else 1.0
+        else:
+            usage_ratio = current_usage / ideal_usage
+        
+        # Score based on how far from ideal (prioritize underrepresented types)
+        if current_usage == 0:
+            return 1000.0  # Highest priority for uncovered types
+        elif usage_ratio < 0.3:
+            return 100.0   # Very high priority for severely underrepresented
+        elif usage_ratio < 0.6:
+            return 50.0    # High priority for underrepresented
+        elif usage_ratio < 1.0:
+            return 20.0    # Medium priority for somewhat underrepresented
+        elif usage_ratio < 1.5:
+            return 5.0     # Low priority for adequately represented
+        elif usage_ratio < 2.0:
+            return 1.0     # Very low priority for slightly overrepresented
+        else:
+            return 0.1     # Almost no priority for significantly overrepresented
+    
+    def calculate_entity_relation_balance(self) -> Dict[str, float]:
+        """Calculate separate balance scores for entities and relations."""
+        entity_counts = list(self.entity_type_usage.values())
+        relation_counts = list(self.relation_type_usage.values())
+        
+        # Entity balance
+        entity_balance = 100.0
+        if entity_counts and any(c > 0 for c in entity_counts):
+            non_zero_entities = [c for c in entity_counts if c > 0]
+            if non_zero_entities:
+                min_entity = min(non_zero_entities)
+                max_entity = max(non_zero_entities)
+                entity_balance = (min_entity / max_entity * 100) if max_entity > 0 else 100.0
+        
+        # Relation balance
+        relation_balance = 100.0
+        if relation_counts and any(c > 0 for c in relation_counts):
+            non_zero_relations = [c for c in relation_counts if c > 0]
+            if non_zero_relations:
+                min_relation = min(non_zero_relations)
+                max_relation = max(non_zero_relations)
+                relation_balance = (min_relation / max_relation * 100) if max_relation > 0 else 100.0
+        
+        # Overall balance (geometric mean of entity and relation balance)
+        overall_balance = (entity_balance * relation_balance) ** 0.5
+        
+        return {
+            "entity_balance": entity_balance,
+            "relation_balance": relation_balance,
+            "overall_balance": overall_balance
+        }
+    
     def select_next_template(self, perspective: str = None) -> object:
-        """Enhanced template selection that prioritizes underrepresented entity/relation types."""
+        """Enhanced template selection with frequency capping and smart distribution balancing."""
         if perspective == "first_person":
             templates = self.first_person_templates
         elif perspective == "third_person":
@@ -4434,11 +4544,9 @@ class BalancedTemplateManager:
         else:
             templates = self.all_templates
         
-        # Calculate need scores for each template based on coverage gaps
+        # Calculate need scores for each template based on distribution gaps and frequency caps
         template_scores = {}
-        
-        all_entity_types = {attr for attr in dir(EntityTypes) if not attr.startswith('_')}
-        all_relation_types = {attr for attr in dir(RelationTypes) if not attr.startswith('_')}
+        templates_with_capped_types = 0
         
         for template_class in templates:
             try:
@@ -4447,40 +4555,70 @@ class BalancedTemplateManager:
                 _, entities_meta, relations_meta = template.generate()
                 
                 score = 0
+                has_capped_types = False
                 
-                # Score based on underrepresented entity types
+                # Check for frequency-capped entity types
                 for _, (entity_type, _) in entities_meta.items():
-                    current_usage = self.entity_type_usage.get(entity_type, 0)
-                    if current_usage == 0:
-                        score += 10  # High value for uncovered types
-                    elif current_usage < 5:
-                        score += 5   # Medium value for low coverage
-                    else:
-                        score += 1   # Low value for well-covered types
+                    if self.is_frequency_capped(entity_type, is_entity=True):
+                        has_capped_types = True
+                        break
                 
-                # Score based on underrepresented relation types
-                for rel_type, _, _ in relations_meta:
-                    current_usage = self.relation_type_usage.get(rel_type, 0)
-                    if current_usage == 0:
-                        score += 10  # High value for uncovered types
-                    elif current_usage < 5:
-                        score += 5   # Medium value for low coverage
-                    else:
-                        score += 1   # Low value for well-covered types
+                # Check for frequency-capped relation types
+                if not has_capped_types:
+                    for rel_type, _, _ in relations_meta:
+                        if self.is_frequency_capped(rel_type, is_entity=False):
+                            has_capped_types = True
+                            break
                 
-                # Penalty for overused templates
-                template_usage = self.template_usage_counts[template_class.__name__]
-                if template_usage > 10:
-                    score *= 0.5  # Reduce score for heavily used templates
+                # If template produces frequency-capped types during balanced phase, heavily penalize
+                if has_capped_types:
+                    templates_with_capped_types += 1
+                    if self.generation_phase == "balanced":
+                        score = 0.0001  # Extremely low score to strongly discourage
+                    else:
+                        score = 0.1  # Low score during coverage phase
+                else:
+                    # Score based on distribution gaps for entity types
+                    for _, (entity_type, _) in entities_meta.items():
+                        gap_score = self.get_distribution_gap_score(entity_type, is_entity=True)
+                        score += gap_score
+                    
+                    # Score based on distribution gaps for relation types  
+                    for rel_type, _, _ in relations_meta:
+                        gap_score = self.get_distribution_gap_score(rel_type, is_entity=False)
+                        score += gap_score
+                    
+                    # Penalty for overused templates (but less aggressive than frequency caps)
+                    template_usage = self.template_usage_counts[template_class.__name__]
+                    if template_usage > 20:
+                        score *= 0.2  # Very strong penalty for heavily used templates
+                    elif template_usage > 15:
+                        score *= 0.4  # Strong penalty
+                    elif template_usage > 10:
+                        score *= 0.6  # Moderate penalty
+                    elif template_usage > 5:
+                        score *= 0.8  # Light penalty
                 
                 template_scores[template_class] = score
                 
             except Exception:
                 # If template fails, give it low score
-                template_scores[template_class] = 1
+                template_scores[template_class] = 0.01
+        
+        # If most templates are producing capped types, we may need to be less strict
+        if self.generation_phase == "balanced" and templates_with_capped_types > len(templates) * 0.8:
+            # Too many templates are capped, relax the restriction slightly
+            for template_class, score in template_scores.items():
+                if score < 0.01:
+                    template_scores[template_class] = 0.1
         
         # Select template with highest need score
         if template_scores:
+            max_score = max(template_scores.values())
+            if max_score < 0.01:
+                # All templates have very low scores, fall back to least used
+                return self.get_least_used_template(perspective)
+            
             best_template = max(template_scores.keys(), key=lambda t: template_scores[t])
             return best_template
         else:
@@ -4676,6 +4814,9 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
     # Initialize balanced template manager
     manager = BalancedTemplateManager(first_person_templates, third_person_templates)
     
+    # Set generation parameters for frequency capping
+    manager.set_generation_parameters(num_records, "coverage")
+    
     # Calculate target counts
     first_person_target = int(num_records * Config.FIRST_PERSON_RATIO)
     third_person_target = num_records - first_person_target
@@ -4746,6 +4887,10 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
     
     # PHASE 2: Balanced Distribution Phase
     print(f"\n⚖️  PHASE 2: Balanced Distribution Phase")
+    
+    # Switch to balanced phase with strict frequency capping
+    manager.set_generation_parameters(num_records, "balanced")
+    
     remaining_records = num_records - len(dataset)
     first_person_remaining = first_person_target - sum(1 for r in dataset if r.get('context', {}).get('Perspective') == 'first_person')
     third_person_remaining = third_person_target - sum(1 for r in dataset if r.get('context', {}).get('Perspective') == 'third_person')
@@ -4767,8 +4912,8 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
             # Only third-person remaining (or both exhausted)
             target_perspective = "third_person"
         
-        # Use least-used template for perfect balance
-        TemplateClass = manager.get_least_used_template(target_perspective)
+        # Use enhanced template selection with frequency capping
+        TemplateClass = manager.select_next_template(target_perspective)
         template_instance = TemplateClass(template_id=len(dataset), base_date=base_date, perspective=target_perspective)
         
         success = False
@@ -4864,28 +5009,15 @@ def generate_balanced_statistics(dataset: List[Dict], failed_generations: int, f
             relation_type = relation.get("type", "UNKNOWN")
             relation_type_counts[relation_type] = relation_type_counts.get(relation_type, 0) + 1
     
-    # Calculate balance scores
+    # Calculate balance scores using enhanced methods
     coverage_stats = manager.get_coverage_stats()
     template_balance = manager.get_balance_score()
+    balance_breakdown = manager.calculate_entity_relation_balance()
     
-    # Entity balance score
-    entity_counts = list(entity_type_counts.values())
-    entity_balance = 100.0
-    if entity_counts:
-        min_entity = min(entity_counts)
-        max_entity = max(entity_counts)
-        entity_balance = (min_entity / max_entity * 100) if max_entity > 0 else 100.0
-    
-    # Relation balance score
-    relation_counts = list(relation_type_counts.values())
-    relation_balance = 100.0
-    if relation_counts:
-        min_relation = min(relation_counts)
-        max_relation = max(relation_counts)
-        relation_balance = (min_relation / max_relation * 100) if max_relation > 0 else 100.0
-    
-    # Overall balance score (weighted average)
-    overall_balance = (template_balance * 0.4 + entity_balance * 0.3 + relation_balance * 0.3)
+    # Use the enhanced balance scores
+    entity_balance = balance_breakdown["entity_balance"]
+    relation_balance = balance_breakdown["relation_balance"]
+    overall_balance = balance_breakdown["overall_balance"]
     
     # Top entity and relation types
     top_entity_types = sorted(entity_type_counts.items(), key=lambda x: x[1], reverse=True)[:15]
