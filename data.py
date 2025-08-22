@@ -5244,9 +5244,155 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
             "template_balance": template_balance
         }
     
+    def would_violate_3x_rule(self, template_class, perspective: str) -> bool:
+        """
+        CRITICAL: Check if template would violate 3x rule BEFORE selection.
+        
+        This is the missing hard rejection logic that prevents massive imbalances.
+        Applies different strictness based on generation phase.
+        """
+        try:
+            # Test generate to see what types this template would produce
+            template = template_class(0, datetime.now(), perspective)
+            _, entities_meta, relations_meta = template.generate()
+            
+            # Get current minimum usage for 3x rule calculation
+            entity_counts = [c for c in self.entity_type_usage.values() if c > 0]
+            relation_counts = [c for c in self.relation_type_usage.values() if c > 0]
+            
+            if not entity_counts or not relation_counts:
+                return False  # Early phase, allow all templates
+            
+            entity_min = min(entity_counts)
+            relation_min = min(relation_counts)
+            
+            # Phase-aware 3x rule enforcement
+            if self.generation_phase == "coverage":
+                # During coverage phase, be more permissive to achieve coverage
+                # Only reject if extremely unbalanced (10x rule instead of 3x)
+                entity_cap = entity_min * 10
+                relation_cap = relation_min * 10
+            else:
+                # During balanced phase, enforce strict 3x rule
+                entity_cap = entity_min * 3
+                relation_cap = relation_min * 3
+            
+            # Check if ANY entity type would exceed the cap
+            for _, (entity_type, _) in entities_meta.items():
+                current_usage = self.entity_type_usage.get(entity_type, 0)
+                if current_usage >= entity_cap:
+                    return True  # REJECT - would violate cap
+            
+            # Check if ANY relation type would exceed the cap
+            for rel_type, _, _ in relations_meta:
+                current_usage = self.relation_type_usage.get(rel_type, 0)
+                if current_usage >= relation_cap:
+                    return True  # REJECT - would violate cap
+            
+            return False  # Template is viable
+            
+        except Exception:
+            return True  # REJECT failing templates
+    
     def select_next_template(self, perspective: str = None) -> object:
-        """Override parent method to use improved selection logic."""
-        return self.get_balanced_template_selection(perspective)
+        """
+        CRITICAL FIX: Add REJECTION LOGIC before template selection.
+        
+        This implements the missing frequency capping enforcement that was causing
+        massive imbalances (PERSON 23,811 times, CONCEPT 21,088 times).
+        """
+        if perspective == "first_person":
+            templates = self.first_person_templates
+        elif perspective == "third_person":
+            templates = self.third_person_templates
+        else:
+            templates = self.all_templates
+        
+        # CRITICAL FIX: Filter out templates that would violate 3x rule
+        viable_templates = []
+        for template_class in templates:
+            if not self.would_violate_3x_rule(template_class, perspective):
+                viable_templates.append(template_class)
+        
+        # Only select from viable templates
+        if viable_templates:
+            return self.get_balanced_template_selection_from_viable(viable_templates, perspective)
+        else:
+            # Emergency fallback: get least violating template
+            print("⚠️  Warning: All templates violate 3x rule, using least violating")
+            return self.get_least_violating_template(templates, perspective)
+    
+    def get_balanced_template_selection_from_viable(self, viable_templates: List, perspective: str) -> object:
+        """
+        Enhanced template selection from pre-filtered viable templates only.
+        
+        This ensures we never select templates that violate the 3x rule.
+        """
+        template_scores = {}
+        
+        for template_class in viable_templates:
+            score = self._calculate_template_need_score(template_class, perspective)
+            template_scores[template_class] = score
+        
+        # Select template with highest need score
+        if template_scores:
+            best_template = max(template_scores.keys(), key=lambda t: template_scores[t])
+            return best_template
+        else:
+            return self.get_least_used_template(perspective)
+    
+    def get_least_violating_template(self, templates: List, perspective: str) -> object:
+        """
+        Emergency fallback: when all templates violate caps, select least violating.
+        Uses phase-aware violation calculation.
+        """
+        violation_scores = {}
+        
+        # Get current minimum usage for violation calculation
+        entity_counts = [c for c in self.entity_type_usage.values() if c > 0]
+        relation_counts = [c for c in self.relation_type_usage.values() if c > 0]
+        
+        entity_min = min(entity_counts) if entity_counts else 1
+        relation_min = min(relation_counts) if relation_counts else 1
+        
+        # Phase-aware caps
+        if self.generation_phase == "coverage":
+            entity_cap = entity_min * 10  # More permissive during coverage
+            relation_cap = relation_min * 10
+        else:
+            entity_cap = entity_min * 3   # Strict during balanced phase
+            relation_cap = relation_min * 3
+        
+        for template_class in templates:
+            try:
+                template = template_class(0, datetime.now(), perspective)
+                _, entities_meta, relations_meta = template.generate()
+                
+                violation_severity = 0
+                
+                # Calculate entity violation severity
+                for _, (entity_type, _) in entities_meta.items():
+                    current_usage = self.entity_type_usage.get(entity_type, 0)
+                    if current_usage >= entity_cap:
+                        violation_severity += (current_usage - entity_cap + 1)
+                
+                # Calculate relation violation severity
+                for rel_type, _, _ in relations_meta:
+                    current_usage = self.relation_type_usage.get(rel_type, 0)
+                    if current_usage >= relation_cap:
+                        violation_severity += (current_usage - relation_cap + 1)
+                
+                violation_scores[template_class] = violation_severity
+                
+            except Exception:
+                violation_scores[template_class] = 1000  # High penalty for failing templates
+        
+        # Select template with minimum violation severity
+        if violation_scores:
+            best_template = min(violation_scores.keys(), key=lambda t: violation_scores[t])
+            return best_template
+        else:
+            return self.get_least_used_template(perspective)
 
 def generate_balanced_dataset(num_records: int = None) -> Dict:
     """Generate perfectly balanced dataset with enhanced tracking and three-phase algorithm."""
