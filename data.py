@@ -5090,8 +5090,8 @@ class BalancedTemplateManager:
             relation_ratio = max_relation / min_relation if min_relation > 0 else float('inf')
             
             # More aggressive emergency balance trigger for better balance
-            # Trigger earlier to prevent extreme imbalances from developing
-            emergency_threshold = 15  # Trigger at 15:1 ratio instead of 100:1
+            # Trigger even earlier to prevent imbalances from developing
+            emergency_threshold = 8  # Trigger at 8:1 ratio for ultra-aggressive balance
             
             if entity_ratio > emergency_threshold or relation_ratio > emergency_threshold:
                 print(f"🚨 EMERGENCY BALANCE MODE: Entity ratio {entity_ratio:.1f}:1, Relation ratio {relation_ratio:.1f}:1")
@@ -5242,9 +5242,9 @@ class BalancedTemplateManager:
             if not entity_items or not relation_items:
                 return self.get_least_used_template(perspective)
             
-            # Find the bottom 30% most underrepresented types for aggressive rebalancing
-            num_bottom_entities = max(1, int(len(entity_items) * 0.3))
-            num_bottom_relations = max(1, int(len(relation_items) * 0.3))
+            # Find the bottom 40% most underrepresented types for ultra-aggressive rebalancing
+            num_bottom_entities = max(1, int(len(entity_items) * 0.4))
+            num_bottom_relations = max(1, int(len(relation_items) * 0.4))
             
             most_needed_entities = [et for et, _ in entity_items[:num_bottom_entities]]
             most_needed_relations = [rt for rt, _ in relation_items[:num_bottom_relations]]
@@ -5271,7 +5271,7 @@ class BalancedTemplateManager:
                     template = template_class(0, datetime.now(), perspective or "first_person")
                     _, entities_meta, relations_meta = template.generate()
                     
-                    score = 10000  # Start with high positive base score for emergency mode
+                    score = 20000  # Start with very high positive base score for ultra-aggressive emergency mode
                     needed_bonus = 0
                     overrep_penalty = 0
                     
@@ -5280,8 +5280,8 @@ class BalancedTemplateManager:
                         if entity_type in most_needed_entities:
                             # Get exact usage count for targeted bonuses
                             current_usage = self.entity_type_usage.get(entity_type, 0)
-                            # Give massive bonus inversely proportional to current usage
-                            bonus = 50000 // max(1, current_usage)  # More bonus for lower usage
+                            # Give ultra-massive bonus inversely proportional to current usage
+                            bonus = 100000 // max(1, current_usage)  # Even more massive bonus for lower usage
                             score += bonus
                             needed_bonus += bonus
                         elif entity_type in overrepresented_entities:
@@ -5299,8 +5299,8 @@ class BalancedTemplateManager:
                         if rel_type in most_needed_relations:
                             # Get exact usage count for targeted bonuses
                             current_usage = self.relation_type_usage.get(rel_type, 0)
-                            # Give massive bonus inversely proportional to current usage
-                            bonus = 50000 // max(1, current_usage)  # More bonus for lower usage
+                            # Give ultra-massive bonus inversely proportional to current usage
+                            bonus = 100000 // max(1, current_usage)  # Even more massive bonus for lower usage
                             score += bonus
                             needed_bonus += bonus
                         elif rel_type in overrepresented_relations:
