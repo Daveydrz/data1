@@ -4923,34 +4923,81 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
             templates = self.all_templates
             rotation_key = "all"
         
-        # Phase 1: Try strict rotation (ensuring all templates get used)
+        # Phase 1: Coverage phase - prioritize coverage over balance
         if self.generation_phase == "coverage":
+            # In coverage phase, use rotation without strict frequency caps
+            # This ensures we achieve full coverage first
             return self._get_rotation_template(templates, rotation_key)
-        
-        # Phase 2: Balanced selection with frequency cap pre-validation
-        viable_templates = []
+        else:
+            # Phase 2: Balanced phase - strict frequency cap pre-validation
+            viable_templates = []
+            
+            for template_class in templates:
+                is_viable, reason = self.is_template_viable(template_class, perspective)
+                if is_viable:
+                    viable_templates.append(template_class)
+            
+            if not viable_templates:
+                # Emergency fallback: Find least violating template instead of giving up
+                print(f"   ⚠️  All templates violate 3x rule for {perspective}, selecting least violating")
+                return self._select_least_violating_template(templates, perspective)
+            
+            # Score viable templates based on need
+            template_scores = {}
+            for template_class in viable_templates:
+                score = self._calculate_template_need_score(template_class, perspective)
+                template_scores[template_class] = score
+            
+            # Select template with highest need score
+            best_template = max(template_scores.keys(), key=lambda t: template_scores[t])
+            return best_template
+    
+    def _select_least_violating_template(self, templates: List, perspective: str) -> object:
+        """
+        When all templates violate frequency caps, select the one that violates least.
+        This prevents the generation from getting stuck while still enforcing balance.
+        """
+        violation_scores = {}
         
         for template_class in templates:
-            is_viable, reason = self.is_template_viable(template_class, perspective)
-            if is_viable:
-                viable_templates.append(template_class)
+            try:
+                template = template_class(0, datetime.now(), perspective)
+                _, entities_meta, relations_meta = template.generate()
+                
+                violation_count = 0
+                
+                # Count entity type violations
+                for _, (entity_type, _) in entities_meta.items():
+                    if self.is_frequency_capped(entity_type, is_entity=True):
+                        current_usage = self.entity_type_usage.get(entity_type, 0)
+                        cap = self.get_frequency_cap(entity_type, is_entity=True)
+                        violation_count += (current_usage - cap + 1)  # +1 for the new usage
+                
+                # Count relation type violations
+                for rel_type, _, _ in relations_meta:
+                    if self.is_frequency_capped(rel_type, is_entity=False):
+                        current_usage = self.relation_type_usage.get(rel_type, 0)
+                        cap = self.get_frequency_cap(rel_type, is_entity=False)
+                        violation_count += (current_usage - cap + 1)  # +1 for the new usage
+                
+                violation_scores[template_class] = violation_count
+                
+            except Exception:
+                violation_scores[template_class] = 1000  # High penalty for failing templates
         
-        if not viable_templates:
-            # Emergency fallback: use least used template
+        # Select template with minimum violations
+        if violation_scores:
+            best_template = min(violation_scores.keys(), key=lambda t: violation_scores[t])
+            return best_template
+        else:
             return self.get_least_used_template(perspective)
-        
-        # Score viable templates based on need
-        template_scores = {}
-        for template_class in viable_templates:
-            score = self._calculate_template_need_score(template_class, perspective)
-            template_scores[template_class] = score
-        
-        # Select template with highest need score
-        best_template = max(template_scores.keys(), key=lambda t: template_scores[t])
-        return best_template
     
     def _get_rotation_template(self, templates: List, rotation_key: str) -> object:
         """Ensure all templates get used before any template is overused."""
+        if not templates:
+            # Fallback if no templates provided
+            return self.get_least_used_template(None)
+            
         # Sort templates by usage count
         templates_by_usage = sorted(templates, 
                                   key=lambda t: self.template_usage_counts[t.__name__])
@@ -4966,6 +5013,7 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
             self.template_rotation_index[rotation_key] += 1
         else:
             index = 0
+            self.template_rotation_index[rotation_key] = 1
             
         return min_usage_templates[index]
     
@@ -5035,12 +5083,21 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
         used_counts = [count for count in usage_dict.values() if count > 0]
         
         if not used_counts:
-            return 5  # Initial cap
+            # During coverage phase, be permissive to achieve coverage
+            if self.generation_phase == "coverage":
+                return 1000  # Very high cap during coverage
+            else:
+                return 5  # Initial cap for balanced phase
         
         min_usage = min(used_counts)
         
-        # Strict 3x rule: no type can exceed 3x the minimum usage
-        return min_usage * 3
+        # During coverage phase, allow high usage to achieve coverage
+        if self.generation_phase == "coverage":
+            # More permissive during coverage, but not unlimited
+            return max(min_usage * 10, 20)
+        else:
+            # Strict 3x rule during balanced phase
+            return min_usage * 3
     
     def calculate_proper_balance_score(self) -> float:
         """
