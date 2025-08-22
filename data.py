@@ -3935,6 +3935,328 @@ class FirstPersonFunctionWordTemplate(Template):
         
         return text, entities, relations
 
+# === NEW TEMPLATES FOR UNDERUSED ENTITY AND RELATION COVERAGE ===
+
+class MediaConsumptionTemplate(Template):
+    def generate(self):
+        media = random.choice(MEDIA_TYPES)
+        platform = random.choice(PLATFORMS)
+        genre = random.choice(GENRES)
+        place = random.choice(LOCATIONS)
+        t = random.choice(START_TIMES)
+        subj_name = "I" if self.perspective == "first_person" else random.choice(PEOPLE_NAMES)
+
+        verb_rel = random.choice([RelationTypes.WATCHES, RelationTypes.READS, RelationTypes.LISTENS_TO])
+        verb_past = "watched" if verb_rel == RelationTypes.WATCHES else ("read" if verb_rel == RelationTypes.READS else "listened to")
+
+        text = (f"{subj_name} {verb_past} a {genre} {media} on {platform} at {t} in {place}.")
+        entities = {
+            "subj": (EntityTypes.PRONOUN if subj_name == "I" else EntityTypes.PERSON, subj_name),
+            "media": (EntityTypes.MEDIA, media),
+            "genre": (EntityTypes.GENRE, genre),
+            "platform": (EntityTypes.PLATFORM, platform),
+            "time": (EntityTypes.TIME, t),
+            "loc": (EntityTypes.LOCATION, place),
+        }
+        relations = [
+            (verb_rel, "subj", "media"),
+            (RelationTypes.ON_DATE, "media", "time"),
+            (RelationTypes.AT_LOCATION, "subj", "loc"),
+        ]
+        return text, entities, relations
+
+class ReadingListeningTemplate(Template):
+    def generate(self):
+        media = random.choice(["article", "book", "podcast", "audiobook", "blog post"])
+        platform = random.choice(PLATFORMS)
+        topic = random.choice(TOPICS)
+        subj_name = "I" if self.perspective == "first_person" else random.choice(PEOPLE_NAMES)
+
+        rel = random.choice([RelationTypes.READS, RelationTypes.LISTENS_TO])
+        verb = "read" if rel == RelationTypes.READS else "listened to"
+
+        text = f"{subj_name} {verb} a {media} on {platform} about {topic}."
+        entities = {
+            "subj": (EntityTypes.PRONOUN if subj_name == "I" else EntityTypes.PERSON, subj_name),
+            "media": (EntityTypes.MEDIA, media),
+            "platform": (EntityTypes.PLATFORM, platform),
+            "topic": (EntityTypes.TOPIC, topic),
+        }
+        relations = [
+            (rel, "subj", "media"),
+            (RelationTypes.ABOUT_TOPIC, "media", "topic"),
+        ]
+        return text, entities, relations
+
+class OwnershipAndObjectsTemplate(Template):
+    def generate(self):
+        subj_name = "I" if self.perspective == "first_person" else random.choice(PEOPLE_NAMES)
+        friend = get_different_person(subj_name if subj_name != "I" else "")
+        # choose one type among object/equipment/vehicle
+        mode = random.choice(["OBJECT", "EQUIPMENT", "VEHICLE"])
+        item = random.choice(OBJECTS) if mode == "OBJECT" else (
+               random.choice(EQUIPMENT_TYPES) if mode == "EQUIPMENT" else random.choice(VEHICLES))
+        purpose = random.choice(["daily work", "creative projects", "weekend trips", "fitness training", "photography"])
+        borrow_flow = random.choice(["none", "borrowed", "lent"])
+
+        text = f"{subj_name} owns a {item} for {purpose}."
+        if borrow_flow == "borrowed":
+            text += f" {subj_name} borrowed it from {friend}."
+        elif borrow_flow == "lent":
+            text += f" {subj_name} lent it to {friend}."
+
+        entities = {
+            "subj": (EntityTypes.PRONOUN if subj_name == "I" else EntityTypes.PERSON, subj_name),
+            "item": (EntityTypes.OBJECT if mode == "OBJECT" else (EntityTypes.EQUIPMENT if mode == "EQUIPMENT" else EntityTypes.VEHICLE), item),
+            "purpose": (EntityTypes.ACTIVITY, purpose),
+            "friend": (EntityTypes.PERSON, friend),
+        }
+        relations = [
+            (RelationTypes.OWNS, "subj", "item"),
+            (RelationTypes.HAS_OBJECT, "subj", "item"),
+            (RelationTypes.USED_FOR, "item", "purpose"),
+        ]
+        if borrow_flow == "borrowed":
+            relations.append((RelationTypes.BORROWED, "subj", "item"))
+        elif borrow_flow == "lent":
+            relations.append((RelationTypes.LENT, "subj", "item"))
+        return text, entities, relations
+
+class EventParticipationTemplate(Template):
+    def generate(self):
+        subj_name = "I" if self.perspective == "first_person" else random.choice(PEOPLE_NAMES)
+        event = random.choice(EVENTS)
+        loc = random.choice(LOCATIONS)
+        date = random.choice(DATES)
+        role = random.choice(COMMUNITY_ROLES)
+        action = random.choice([RelationTypes.ATTENDS, RelationTypes.PARTICIPATES_IN])
+        maybe_org = random.choice([True, False])
+
+        text = f"{subj_name} {('attended' if action==RelationTypes.ATTENDS else 'participated in')} a {event} on {date} at {loc} as a {role}."
+        if maybe_org:
+            text += f" {subj_name} also helped organize the {event}."
+
+        entities = {
+            "subj": (EntityTypes.PRONOUN if subj_name == "I" else EntityTypes.PERSON, subj_name),
+            "ev": (EntityTypes.EVENT, event),
+            "loc": (EntityTypes.LOCATION, loc),
+            "date": (EntityTypes.DATE, date),
+            "role": (EntityTypes.COMMUNITY_ROLE, role),
+        }
+        relations = [
+            (action, "subj", "ev"),
+            (RelationTypes.ON_DATE, "ev", "date"),
+            (RelationTypes.AT_LOCATION, "subj", "loc"),
+            (RelationTypes.HAS_ROLE, "subj", "role"),
+        ]
+        if maybe_org:
+            relations.append((RelationTypes.ORGANIZES, "subj", "ev"))
+        return text, entities, relations
+
+class FoodAndBusinessTemplate(Template):
+    def generate(self):
+        diner = random.choice(BUSINESS_TYPES)
+        dish = random.choice(FOODS)
+        price = random.choice(MONEY)
+        loc = random.choice(LOCATIONS)
+
+        text = f"The {diner} near {loc} serves {dish} that costs {price}."
+        entities = {
+            "biz": (EntityTypes.BUSINESS, diner),
+            "food": (EntityTypes.FOOD, dish),
+            "amt": (EntityTypes.AMOUNT, price),
+            "loc": (EntityTypes.LOCATION, loc),
+        }
+        relations = [
+            (RelationTypes.SERVES, "biz", "food"),
+            (RelationTypes.COSTS, "food", "amt"),
+            (RelationTypes.AT_LOCATION, "biz", "loc"),
+        ]
+        return text, entities, relations
+
+class SpatialUtilityTemplate(Template):
+    def generate(self):
+        room = random.choice(ROOM_TYPES)
+        obj = random.choice(OBJECTS)
+        equip = random.choice(EQUIPMENT_TYPES)
+        place = random.choice(LOCATIONS)
+        use = random.choice(["video calls", "design work", "coding sessions", "reading time", "workouts"])
+
+        text = f"In the {room}, a {obj} sits near {place}, and a {equip} is used for {use}."
+        entities = {
+            "room": (EntityTypes.ROOM, room),
+            "obj": (EntityTypes.OBJECT, obj),
+            "equip": (EntityTypes.EQUIPMENT, equip),
+            "loc": (EntityTypes.LOCATION, place),
+            "use": (EntityTypes.ACTIVITY, use),
+        }
+        relations = [
+            (RelationTypes.HAS_OBJECT, "room", "obj"),
+            (RelationTypes.USED_FOR, "equip", "use"),
+            (RelationTypes.IS_NEAR, "obj", "loc"),
+        ]
+        return text, entities, relations
+
+class TravelTransportTemplate(Template):
+    def generate(self):
+        subj_name = "I" if self.perspective == "first_person" else random.choice(PEOPLE_NAMES)
+        vehicle = random.choice(VEHICLES)
+        dest = random.choice(LOCATIONS)
+        start = random.choice(START_TIMES)
+        duration = random.choice(DURATIONS)
+
+        text = f"{subj_name} traveled to {dest} in a {vehicle}, starting at {start} and going for {duration}."
+        entities = {
+            "subj": (EntityTypes.PRONOUN if subj_name == "I" else EntityTypes.PERSON, subj_name),
+            "veh": (EntityTypes.VEHICLE, vehicle),
+            "dest": (EntityTypes.LOCATION, dest),
+            "tstart": (EntityTypes.TIME, start),
+            "dur": (EntityTypes.DURATION, duration),
+        }
+        relations = [
+            (RelationTypes.TRAVELS_TO, "subj", "dest"),
+            (RelationTypes.USES, "subj", "veh"),
+            (RelationTypes.STARTS_AT, "subj", "tstart"),
+            (RelationTypes.FOR_DURATION, "subj", "dur"),
+        ]
+        return text, entities, relations
+
+class CulturalCommunityTemplate(Template):
+    def generate(self):
+        subj_name = "I" if self.perspective == "first_person" else random.choice(PEOPLE_NAMES)
+        element = random.choice(CULTURAL_ELEMENTS)
+        event = random.choice(["heritage day", "community festival", "traditional ceremony", "cultural workshop"])
+        date = random.choice(DATES)
+        role = random.choice(COMMUNITY_ROLES)
+        leadership = random.choice([RelationTypes.PARTICIPATES_IN, RelationTypes.ORGANIZES, RelationTypes.LEADS])
+
+        text = f"{subj_name} took part in a {event} on {date}, sharing {element} as a {role}."
+        if leadership == RelationTypes.LEADS:
+            text += f" {subj_name} led the event activities."
+
+        entities = {
+            "subj": (EntityTypes.PRONOUN if subj_name == "I" else EntityTypes.PERSON, subj_name),
+            "event": (EntityTypes.EVENT, event),
+            "date": (EntityTypes.DATE, date),
+            "element": (EntityTypes.CULTURAL_ELEMENT, element),
+            "role": (EntityTypes.COMMUNITY_ROLE, role),
+        }
+        relations = [
+            (RelationTypes.PARTICIPATES_IN, "subj", "event"),
+            (RelationTypes.ON_DATE, "event", "date"),
+            (RelationTypes.HAS_ROLE, "subj", "role"),
+        ]
+        if leadership in (RelationTypes.ORGANIZES, RelationTypes.LEADS):
+            relations.append((leadership, "subj", "event"))
+        return text, entities, relations
+
+class LearningMethodTemplate(Template):
+    def generate(self):
+        subj_name = "I" if self.perspective == "first_person" else random.choice(PEOPLE_NAMES)
+        method = random.choice(LEARNING_METHODS)
+        skill = random.choice(SKILLS)
+        growth = random.choice(PERSONAL_GROWTH)
+
+        text = f"{subj_name} learned {skill} through {method}, which resulted in {growth}."
+        entities = {
+            "subj": (EntityTypes.PRONOUN if subj_name == "I" else EntityTypes.PERSON, subj_name),
+            "method": (EntityTypes.LEARNING_METHOD, method),
+            "skill": (EntityTypes.SKILL, skill),
+            "growth": (EntityTypes.PERSONAL_GROWTH, growth),
+        }
+        relations = [
+            (RelationTypes.LEARNS, "subj", "skill"),
+            (random.choice([RelationTypes.MASTERED, RelationTypes.ACHIEVED]), "subj", "skill"),
+            (RelationTypes.RESULTS_IN, "skill", "growth"),
+        ]
+        return text, entities, relations
+
+class MentorshipAchievementTemplate(Template):
+    def generate(self):
+        subj_name = "I" if self.perspective == "first_person" else random.choice(PEOPLE_NAMES)
+        mentor = get_different_person(subj_name if subj_name != "I" else "")
+        project = random.choice(["open-source project", "research study", "startup pilot", "community program"])
+        skill = random.choice(SKILLS)
+        emotion = random.choice(["pride", "gratitude", "sadness", "hope"])
+
+        text = (f"{subj_name} was mentored by {mentor} and felt {emotion}. "
+                f"{subj_name} achieved progress on a {project} and now leads the initiative while improving {skill}.")
+        # optional grief/overcame branch
+        branch = random.choice(["none", "overcame", "mourns"])
+        if branch == "overcame":
+            text += f" {subj_name} overcame a setback."
+        elif branch == "mourns":
+            text += f" {subj_name} mourns a recent loss."
+
+        entities = {
+            "subj": (EntityTypes.PRONOUN if subj_name == "I" else EntityTypes.PERSON, subj_name),
+            "mentor": (EntityTypes.PERSON, mentor),
+            "proj": (EntityTypes.PROJECT, project),
+            "skill": (EntityTypes.SKILL, skill),
+            "emo": (EntityTypes.EMOTION, emotion),
+        }
+        relations = [
+            (RelationTypes.MENTORED_BY, "subj", "mentor"),
+            (RelationTypes.INSPIRED_BY, "subj", "mentor"),
+            (RelationTypes.ACHIEVED, "subj", "proj"),
+            (random.choice([RelationTypes.LEADS, RelationTypes.LEADS_INITIATIVE]), "subj", "proj"),
+            (RelationTypes.HAS_EXPERTISE, "subj", "skill"),
+            (RelationTypes.FEELS_EMOTION, "subj", "emo"),
+        ]
+        if branch == "overcame":
+            relations.append((RelationTypes.OVERCAME, "subj", "proj"))
+        elif branch == "mourns":
+            relations.append((RelationTypes.MOURNS, "subj", "proj"))
+        return text, entities, relations
+
+class BudgetIndustryTimelineTemplate(Template):
+    def generate(self):
+        subj_name = "I" if self.perspective == "first_person" else random.choice(PEOPLE_NAMES)
+        amount = random.choice(MONEY)
+        budget = random.choice(["marketing budget", "R&D budget", "training budget", "travel budget"])
+        industry = random.choice(INDUSTRIES)
+        timeline = random.choice(["Q3 timeline", "annual timeline", "six-month plan"])
+        start = random.choice(START_TIMES)
+
+        text = (f"At {start}, {subj_name} allocated {amount} to the {budget} in the {industry} industry "
+                f"with a {timeline}.")
+        entities = {
+            "subj": (EntityTypes.PRONOUN if subj_name == "I" else EntityTypes.PERSON, subj_name),
+            "amt": (EntityTypes.AMOUNT, amount),
+            "bud": (EntityTypes.BUDGET, budget),
+            "ind": (EntityTypes.INDUSTRY, industry),
+            "time": (EntityTypes.TIME, start),
+            "tl": (EntityTypes.TIMELINE, timeline),
+        }
+        relations = [
+            (RelationTypes.BUDGETS_FOR, "subj", "bud"),
+            (RelationTypes.STARTS_AT, "bud", "time"),
+            (RelationTypes.HAS_DEADLINE, "bud", "tl"),
+            (RelationTypes.IS_PART_OF, "ind", "tl"),
+        ]
+        return text, entities, relations
+
+class BusinessProximityTemplate(Template):
+    def generate(self):
+        biz = random.choice(BUSINESS_TYPES)
+        near_loc = random.choice(LOCATIONS)
+        food = random.choice(FOODS)
+        price = random.choice(MONEY)
+
+        text = f"A {biz} is near {near_loc} and serves {food} for {price}."
+        entities = {
+            "biz": (EntityTypes.BUSINESS, biz),
+            "loc": (EntityTypes.LOCATION, near_loc),
+            "food": (EntityTypes.FOOD, food),
+            "amt": (EntityTypes.AMOUNT, price),
+        }
+        relations = [
+            (RelationTypes.IS_NEAR, "biz", "loc"),
+            (RelationTypes.SERVES, "biz", "food"),
+            (RelationTypes.COSTS, "food", "amt"),
+        ]
+        return text, entities, relations
+
 # --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
 # MAIN GENERATION FUNCTION
 # --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
@@ -5166,7 +5488,20 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
         FirstPersonLifeEventsTemplate,
         FirstPersonOrganizationContextTemplate,
         FirstPersonPlatformContextTemplate,
-        FirstPersonFunctionWordTemplate
+        FirstPersonFunctionWordTemplate,
+        # New templates for underused entity and relation coverage
+        MediaConsumptionTemplate,
+        ReadingListeningTemplate,
+        OwnershipAndObjectsTemplate,
+        EventParticipationTemplate,
+        FoodAndBusinessTemplate,
+        SpatialUtilityTemplate,
+        TravelTransportTemplate,
+        CulturalCommunityTemplate,
+        LearningMethodTemplate,
+        MentorshipAchievementTemplate,
+        BudgetIndustryTimelineTemplate,
+        BusinessProximityTemplate
     ]
     
     third_person_templates = [
@@ -5209,7 +5544,20 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
         ThirdPersonTimeManagementTemplate,
         ThirdPersonBeliefInfluenceTemplate,
         ThirdPersonLearningMentorshipTemplate,
-        ThirdPersonEmotionalJourneyTemplate
+        ThirdPersonEmotionalJourneyTemplate,
+        # New templates for underused entity and relation coverage (work with both perspectives)
+        MediaConsumptionTemplate,
+        ReadingListeningTemplate,
+        OwnershipAndObjectsTemplate,
+        EventParticipationTemplate,
+        FoodAndBusinessTemplate,
+        SpatialUtilityTemplate,
+        TravelTransportTemplate,
+        CulturalCommunityTemplate,
+        LearningMethodTemplate,
+        MentorshipAchievementTemplate,
+        BudgetIndustryTimelineTemplate,
+        BusinessProximityTemplate
     ]
     
     # Initialize balanced template manager
