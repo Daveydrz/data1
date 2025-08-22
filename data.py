@@ -444,6 +444,31 @@ def get_realistic_frequency_for_activity(activity: str) -> str:
         return random.choice(FREQUENCY_DETAILED)
 
 # --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+# REALISTIC DATA POOLS (SOLUTION FOR ISSUE #4)
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+
+def get_realistic_work_duration() -> str:
+    """Get realistic work durations."""
+    WORK_DURATIONS = ["6 months", "1 year", "2 years", "3 years", "5 years", "7 years", "10 years"]
+    return random.choice(WORK_DURATIONS)
+
+def get_realistic_money_amount() -> str:
+    """Get realistic money amounts for various contexts."""
+    REALISTIC_MONEY = ["$500", "$1,500", "$5,000", "$15,000", "$25,000", "$50,000", "$100,000"]
+    return random.choice(REALISTIC_MONEY)
+
+def get_realistic_duration_for_context(context: str) -> str:
+    """Get realistic duration based on context."""
+    if "work" in context.lower() or "job" in context.lower():
+        return get_realistic_work_duration()
+    elif "travel" in context.lower():
+        return random.choice(["2 days", "1 week", "2 weeks", "1 month", "3 months"])
+    elif "study" in context.lower() or "learn" in context.lower():
+        return random.choice(["2 hours", "1 day", "1 week", "1 month", "6 months", "1 year"])
+    else:
+        return random.choice(["30 minutes", "2 hours", "1 day", "1 week", "1 month"])
+
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
 # TEMPLATE BASE CLASS
 # --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
 
@@ -4831,6 +4856,345 @@ class BalancedTemplateManager:
             "relation_usage": dict(self.relation_type_usage)
         }
 
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+# IMPROVED BALANCED TEMPLATE MANAGER (SOLUTION FOR CRITICAL ISSUES)
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+
+class ImprovedBalancedTemplateManager(BalancedTemplateManager):
+    """
+    Enhanced template manager that fixes critical frequency capping and balance issues.
+    
+    Key Improvements:
+    1. Pre-validation template selection with frequency cap checking (Issue #1)
+    2. Fixed coverage statistics calculation and display (Issue #2) 
+    3. Enhanced template rotation with strict enforcement (Issue #3)
+    4. Proper balance scoring with 3x rule enforcement (Issue #5)
+    """
+    
+    def __init__(self, first_person_templates: List, third_person_templates: List):
+        super().__init__(first_person_templates, third_person_templates)
+        self.template_rotation_index = {"first_person": 0, "third_person": 0}
+        self.strict_3x_enforcement = True
+        
+    def is_template_viable(self, template_class, perspective: str) -> Tuple[bool, str]:
+        """
+        Pre-validate template to check if it can be used without violating frequency caps.
+        
+        This is the core fix for Issue #1: Check frequency caps BEFORE template selection.
+        """
+        try:
+            # Pre-generate to see what types this template would produce
+            template = template_class(0, datetime.now(), perspective)
+            _, entities_meta, relations_meta = template.generate()
+            
+            violated_types = []
+            
+            # Check each entity type this template would produce
+            for _, (entity_type, _) in entities_meta.items():
+                if self.is_frequency_capped(entity_type, is_entity=True):
+                    violated_types.append(f"E:{entity_type}")
+            
+            # Check each relation type this template would produce  
+            for rel_type, _, _ in relations_meta:
+                if self.is_frequency_capped(rel_type, is_entity=False):
+                    violated_types.append(f"R:{rel_type}")
+            
+            if violated_types:
+                return False, f"Would violate caps: {', '.join(violated_types[:3])}"
+            else:
+                return True, "Template viable"
+                
+        except Exception as e:
+            return False, f"Template generation failed: {str(e)[:50]}"
+    
+    def get_balanced_template_selection(self, perspective: str) -> object:
+        """
+        Enhanced template selection with strict rotation and frequency cap pre-validation.
+        
+        This fixes Issue #3: Template over-usage problem.
+        """
+        if perspective == "first_person":
+            templates = self.first_person_templates
+            rotation_key = "first_person"
+        elif perspective == "third_person":
+            templates = self.third_person_templates  
+            rotation_key = "third_person"
+        else:
+            templates = self.all_templates
+            rotation_key = "all"
+        
+        # Phase 1: Coverage phase - prioritize coverage over balance
+        if self.generation_phase == "coverage":
+            # In coverage phase, use rotation without strict frequency caps
+            # This ensures we achieve full coverage first
+            return self._get_rotation_template(templates, rotation_key)
+        else:
+            # Phase 2: Balanced phase - strict frequency cap pre-validation
+            viable_templates = []
+            
+            for template_class in templates:
+                is_viable, reason = self.is_template_viable(template_class, perspective)
+                if is_viable:
+                    viable_templates.append(template_class)
+            
+            if not viable_templates:
+                # Emergency fallback: Find least violating template instead of giving up
+                print(f"   ⚠️  All templates violate 3x rule for {perspective}, selecting least violating")
+                return self._select_least_violating_template(templates, perspective)
+            
+            # Score viable templates based on need
+            template_scores = {}
+            for template_class in viable_templates:
+                score = self._calculate_template_need_score(template_class, perspective)
+                template_scores[template_class] = score
+            
+            # Select template with highest need score
+            best_template = max(template_scores.keys(), key=lambda t: template_scores[t])
+            return best_template
+    
+    def _select_least_violating_template(self, templates: List, perspective: str) -> object:
+        """
+        When all templates violate frequency caps, select the one that violates least.
+        This prevents the generation from getting stuck while still enforcing balance.
+        """
+        violation_scores = {}
+        
+        for template_class in templates:
+            try:
+                template = template_class(0, datetime.now(), perspective)
+                _, entities_meta, relations_meta = template.generate()
+                
+                violation_count = 0
+                
+                # Count entity type violations
+                for _, (entity_type, _) in entities_meta.items():
+                    if self.is_frequency_capped(entity_type, is_entity=True):
+                        current_usage = self.entity_type_usage.get(entity_type, 0)
+                        cap = self.get_frequency_cap(entity_type, is_entity=True)
+                        violation_count += (current_usage - cap + 1)  # +1 for the new usage
+                
+                # Count relation type violations
+                for rel_type, _, _ in relations_meta:
+                    if self.is_frequency_capped(rel_type, is_entity=False):
+                        current_usage = self.relation_type_usage.get(rel_type, 0)
+                        cap = self.get_frequency_cap(rel_type, is_entity=False)
+                        violation_count += (current_usage - cap + 1)  # +1 for the new usage
+                
+                violation_scores[template_class] = violation_count
+                
+            except Exception:
+                violation_scores[template_class] = 1000  # High penalty for failing templates
+        
+        # Select template with minimum violations
+        if violation_scores:
+            best_template = min(violation_scores.keys(), key=lambda t: violation_scores[t])
+            return best_template
+        else:
+            return self.get_least_used_template(perspective)
+    
+    def _get_rotation_template(self, templates: List, rotation_key: str) -> object:
+        """Ensure all templates get used before any template is overused."""
+        if not templates:
+            # Fallback if no templates provided
+            return self.get_least_used_template(None)
+            
+        # Sort templates by usage count
+        templates_by_usage = sorted(templates, 
+                                  key=lambda t: self.template_usage_counts[t.__name__])
+        
+        # Find templates with minimum usage
+        min_usage = min(self.template_usage_counts[t.__name__] for t in templates)
+        min_usage_templates = [t for t in templates_by_usage 
+                             if self.template_usage_counts[t.__name__] == min_usage]
+        
+        # Use rotation within minimum usage templates
+        if rotation_key in self.template_rotation_index:
+            index = self.template_rotation_index[rotation_key] % len(min_usage_templates)
+            self.template_rotation_index[rotation_key] += 1
+        else:
+            index = 0
+            self.template_rotation_index[rotation_key] = 1
+            
+        return min_usage_templates[index]
+    
+    def _calculate_template_need_score(self, template_class, perspective: str) -> float:
+        """Calculate how much this template is needed based on underrepresented types."""
+        try:
+            template = template_class(0, datetime.now(), perspective)
+            _, entities_meta, relations_meta = template.generate()
+            
+            score = 0
+            
+            # Score based on entity type needs
+            for _, (entity_type, _) in entities_meta.items():
+                current_usage = self.entity_type_usage.get(entity_type, 0)
+                score += self._get_type_priority_score(current_usage, is_entity=True)
+            
+            # Score based on relation type needs  
+            for rel_type, _, _ in relations_meta:
+                current_usage = self.relation_type_usage.get(rel_type, 0)
+                score += self._get_type_priority_score(current_usage, is_entity=False)
+            
+            # Penalty for template overuse
+            template_usage = self.template_usage_counts[template_class.__name__]
+            if template_usage > 50:
+                score *= 0.1  # Heavy penalty
+            elif template_usage > 20:
+                score *= 0.3  # Moderate penalty
+            elif template_usage > 10:
+                score *= 0.7  # Light penalty
+            
+            return score
+            
+        except Exception:
+            return 0.1  # Low score for failing templates
+    
+    def _get_type_priority_score(self, current_usage: int, is_entity: bool) -> float:
+        """Get priority score for a type based on current usage."""
+        usage_dict = self.entity_type_usage if is_entity else self.relation_type_usage
+        used_counts = [count for count in usage_dict.values() if count > 0]
+        
+        if not used_counts:
+            return 1000.0 if current_usage == 0 else 100.0
+        
+        min_usage = min(used_counts)
+        
+        if current_usage == 0:
+            return 10000.0  # Highest priority for uncovered
+        elif current_usage <= min_usage:
+            return 5000.0   # High priority for minimum usage
+        elif current_usage <= min_usage * 2:
+            return 1000.0   # Medium priority
+        elif current_usage <= min_usage * 3:
+            return 100.0    # Low priority (at 3x limit)
+        else:
+            return 1.0      # Very low priority (over 3x limit)
+    
+    def get_frequency_cap(self, type_name: str, is_entity: bool = True) -> int:
+        """
+        Simplified frequency cap calculation with strict 3x rule enforcement.
+        
+        This fixes the broken frequency capping logic from Issue #1.
+        """
+        if not self.strict_3x_enforcement:
+            return super().get_frequency_cap(type_name, is_entity)
+        
+        usage_dict = self.entity_type_usage if is_entity else self.relation_type_usage
+        used_counts = [count for count in usage_dict.values() if count > 0]
+        
+        if not used_counts:
+            # During coverage phase, be permissive to achieve coverage
+            if self.generation_phase == "coverage":
+                return 1000  # Very high cap during coverage
+            else:
+                return 5  # Initial cap for balanced phase
+        
+        min_usage = min(used_counts)
+        
+        # During coverage phase, allow high usage to achieve coverage
+        if self.generation_phase == "coverage":
+            # More permissive during coverage, but not unlimited
+            return max(min_usage * 10, 20)
+        else:
+            # Strict 3x rule during balanced phase
+            return min_usage * 3
+    
+    def calculate_proper_balance_score(self) -> float:
+        """
+        Calculate balance using strict 3x rule with geometric mean.
+        
+        This fixes Issue #5: Balance calculation issues.
+        Perfect balance = 100%, 3x violation = 33.3%
+        """
+        entity_balance = self._calculate_type_balance(is_entity=True)
+        relation_balance = self._calculate_type_balance(is_entity=False)
+        template_balance = self._calculate_template_balance()
+        
+        # Use geometric mean for overall score (more sensitive to imbalances)
+        if entity_balance > 0 and relation_balance > 0 and template_balance > 0:
+            geometric_mean = (entity_balance * relation_balance * template_balance) ** (1/3)
+            return geometric_mean
+        else:
+            return 0.0
+    
+    def _calculate_type_balance(self, is_entity: bool) -> float:
+        """Calculate balance score for entity or relation types using 3x rule."""
+        usage_dict = self.entity_type_usage if is_entity else self.relation_type_usage
+        used_counts = [count for count in usage_dict.values() if count > 0]
+        
+        if not used_counts:
+            return 100.0
+        
+        min_usage = min(used_counts)
+        max_usage = max(used_counts)
+        
+        if min_usage == 0:
+            return 0.0  # Complete imbalance
+        
+        # Perfect balance = 100%, 3x rule violation = 33.3%
+        balance_ratio = min_usage / max_usage
+        
+        # Convert to percentage where 3x violation = 33.3%
+        if max_usage <= min_usage * 3:
+            # Within 3x rule, scale from 33.3% to 100%
+            return 33.3 + (balance_ratio - 1/3) * (100 - 33.3) / (2/3)
+        else:
+            # Violates 3x rule, scale from 0% to 33.3%
+            return 33.3 * balance_ratio
+    
+    def _calculate_template_balance(self) -> float:
+        """Calculate template usage balance."""
+        used_counts = [count for count in self.template_usage_counts.values() if count > 0]
+        
+        if not used_counts:
+            return 100.0
+        
+        min_usage = min(used_counts)
+        max_usage = max(used_counts)
+        
+        if min_usage == 0:
+            return 0.0
+        
+        # Template balance using same 3x rule logic
+        balance_ratio = min_usage / max_usage
+        return balance_ratio * 100
+    
+    def get_coverage_stats(self) -> Dict:
+        """
+        Fixed coverage statistics with proper display.
+        
+        This fixes Issue #2: Coverage statistics display bug.
+        """
+        all_entity_types = {attr for attr in dir(EntityTypes) if not attr.startswith('_')}
+        all_relation_types = {attr for attr in dir(RelationTypes) if not attr.startswith('_')}
+        
+        covered_entity_count = len(self.covered_entities)
+        covered_relation_count = len(self.covered_relations)
+        
+        entity_coverage = (covered_entity_count / len(all_entity_types)) * 100
+        relation_coverage = (covered_relation_count / len(all_relation_types)) * 100
+        
+        # Use improved balance calculation
+        balance_score = self.calculate_proper_balance_score()
+        
+        return {
+            "entity_coverage_percent": entity_coverage,
+            "relation_coverage_percent": relation_coverage,
+            "covered_entities": covered_entity_count,
+            "total_entities": len(all_entity_types),
+            "covered_relations": covered_relation_count,
+            "total_relations": len(all_relation_types),
+            "balance_score": balance_score,
+            "entity_balance": self._calculate_type_balance(is_entity=True),
+            "relation_balance": self._calculate_type_balance(is_entity=False),
+            "uncovered_entities": len(all_entity_types) - covered_entity_count,
+            "uncovered_relations": len(all_relation_types) - covered_relation_count
+        }
+    
+    def select_next_template(self, perspective: str = None) -> object:
+        """Override parent method to use improved selection logic."""
+        return self.get_balanced_template_selection(perspective)
+
 def generate_balanced_dataset(num_records: int = None) -> Dict:
     """Generate perfectly balanced dataset with enhanced tracking and three-phase algorithm."""
     
@@ -5253,6 +5617,357 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
         }
     }
 
+def generate_improved_balanced_dataset(num_records: int = None) -> Dict:
+    """
+    Generate perfectly balanced dataset using ImprovedBalancedTemplateManager.
+    
+    This function implements all the critical fixes:
+    - Pre-validation template selection (Issue #1)
+    - Fixed coverage statistics (Issue #2) 
+    - Enhanced template rotation (Issue #3)
+    - Realistic data generation (Issue #4)
+    - Proper balance scoring (Issue #5)
+    """
+    
+    if num_records is None:
+        num_records = Config.DEFAULT_NUM_RECORDS
+    
+    print(f"🚀 IMPROVED BALANCED DATASET GENERATION")
+    print(f"============================================================")
+    print(f"🎯 Target: {num_records} records with critical fixes applied")
+    print(f"🔧 Fixes: Pre-validation + Proper caps + Fixed stats + Realistic data")
+    
+    dataset = []
+    base_date = datetime.strptime(Config.CURRENT_UTC_DATETIME, "%Y-%m-%d %H:%M:%S")
+    failed_generations = 0
+    failure_reasons = {}
+    quality_issues = {}
+    
+    # Use same template lists as original (copy from generate_balanced_dataset)
+    first_person_templates = [
+        FirstPersonExpandedTravelTemplate,
+        FirstPersonObjectOwnershipTemplate,
+        FirstPersonHealthGoalTemplate,
+        FirstPersonWorkRoleTemplate,
+        FirstPersonWeatherMoodTemplate,
+        FirstPersonTransportationMemoryTemplate,
+        FirstPersonRoomPreferenceTemplate,
+        FirstPersonMediaConsumptionTemplate,
+        FirstPersonBusinessInteractionTemplate,
+        FirstPersonEquipmentOwnershipTemplate,
+        FirstPersonSocialAnxietyTemplate,
+        FirstPersonSkillDevelopmentProgressTemplate,
+        FirstPersonNicknameStoryTemplate,
+        FirstPersonBorrowLendTemplate,
+        FirstPersonFamilyTraditionTemplate,
+        FirstPersonScheduleStressTemplate,
+        FirstPersonValueConflictTemplate,
+        FirstPersonSensoryOverloadTemplate,
+        FirstPersonMoneyGoalTemplate,
+        FirstPersonIdeaDevelopmentTemplate,
+        FirstPersonBeliefChallengeTemplate,
+        FirstPersonTasteMemoryTemplate,
+        FirstPersonOpinionChangeTemplate,
+        FirstPersonAttributeDevelopmentTemplate,
+        FirstPersonChildhoodMemoryTemplate,
+        FirstPersonLossGriefTemplate,
+        FirstPersonCareerMilestoneTemplate,
+        FirstPersonFearOvercomeTemplate,
+        FirstPersonCreativeAchievementTemplate,
+        FirstPersonHealthScareTemplate,
+        FirstPersonFailureLessonTemplate,
+        FirstPersonMentorshipMemoryTemplate,
+        FirstPersonFinalCognitiveTemplate,
+        FirstPersonAllSensoryTemplate,
+        FirstPersonTimeScheduleTemplate,
+        FirstPersonLocationExpertiseTraitTemplate,
+        FirstPersonBeliefsOpinionsTemplate,
+        FirstPersonHealthFinanceTemplate,
+        FirstPersonIdentityNicknameTemplate,
+        FirstPersonRareEntityTypesTemplate,
+        FirstPersonCognitiveProcessTemplate,
+        FirstPersonCompleteSensoryTemplate,
+        FirstPersonTemporalRoutineTemplate,
+        FirstPersonLocationExpertiseTemplate,
+        FirstPersonHopesPlanningTemplate,
+        FirstPersonBeliefsValuesTemplate,
+        FirstPersonHealthManagementTemplate,
+        FirstPersonFinancialGoalsTemplate,
+        FirstPersonNicknameIdentityTemplate,
+        FirstPersonIdeaInnovationTemplate,
+        FirstPersonLifeStageReflectionTemplate,
+        FirstPersonCulturalLearningTemplate,
+        FirstPersonIndustryExpertiseTemplate,
+        FirstPersonThinkingProcessTemplate,
+        FirstPersonRegretAnticipationTemplate,
+        FirstPersonCompleteSensoryTemplate,
+        FirstPersonRepeatingRoutineTemplate,
+        FirstPersonComprehensiveCoverageTemplate,
+        FirstPersonComplexMemoryTemplate,
+        FirstPersonMemoryRecallTemplate,
+        FirstPersonAchievementTemplate,
+        FirstPersonMediaPreferencesTemplate,
+        FirstPersonLifeEventsTemplate,
+        FirstPersonOrganizationContextTemplate,
+        FirstPersonPlatformContextTemplate,
+        FirstPersonFunctionWordTemplate
+    ]
+    
+    third_person_templates = [
+        ThirdPersonPetTemplate,
+        ThirdPersonComprehensiveMemoryTemplate,
+        ThirdPersonPetCareTemplate,
+        ThirdPersonAdvancedCognitiveTemplate,
+        ThirdPersonTemporalExpertiseTemplate,
+        ThirdPersonRelationshipMaintainerTemplate,
+        ThirdPersonIndustryInnovationTemplate,
+        ThirdPersonLifeStageWisdomTemplate,
+        ThirdPersonCulturalPreservationTemplate,
+        ThirdPersonLifeTransitionTemplate,
+        ThirdPersonCulturalExperienceTemplate,
+        ThirdPersonGenerosityTemplate,
+        ThirdPersonSkillMasteryTemplate,
+        ThirdPersonCommunityLeadershipTemplate,
+        ThirdPersonVehicleOwnershipTemplate,
+        ThirdPersonMediaProductionTemplate,
+        ThirdPersonWeatherImpactTemplate,
+        ThirdPersonGroupMembershipTemplate,
+        ThirdPersonFamilyRelationshipTemplate,
+        ThirdPersonCausationTemplate,
+        ThirdPersonLocationProximityTemplate,
+        ThirdPersonPlatformInfluenceTemplate,
+        ThirdPersonRoomOrganizationTemplate,
+        ThirdPersonGenrePreferenceTemplate,
+        ThirdPersonBusinessOwnershipTemplate,
+        ThirdPersonTransportationRoutineTemplate,
+        ThirdPersonConditionManagementTemplate,
+        ThirdPersonSentimentAnalysisTemplate,
+        ThirdPersonIntentActionTemplate,
+        ThirdPersonProximityNetworkTemplate,
+        ThirdPersonAttributeRecognitionTemplate,
+        ThirdPersonDateEventTemplate,
+        ThirdPersonPartOfSystemTemplate,
+        ThirdPersonWeatherAdaptationTemplate,
+        ThirdPersonFriendshipBondTemplate,
+        ThirdPersonEquipmentSharingTemplate,
+        ThirdPersonTimeManagementTemplate,
+        ThirdPersonBeliefInfluenceTemplate,
+        ThirdPersonLearningMentorshipTemplate,
+        ThirdPersonEmotionalJourneyTemplate
+    ]
+    
+    # Create improved manager instance
+    manager = ImprovedBalancedTemplateManager(first_person_templates, third_person_templates)
+    manager.set_generation_parameters(num_records, "coverage")
+    
+    # Calculate perspective distribution
+    first_person_count = int(num_records * Config.FIRST_PERSON_RATIO)
+    third_person_count = num_records - first_person_count
+    
+    print(f"📋 Generation Plan:")
+    print(f"   - First-person records: {first_person_count} ({Config.FIRST_PERSON_RATIO:.0%})")
+    print(f"   - Third-person records: {third_person_count} ({Config.THIRD_PERSON_RATIO:.0%})")
+    print(f"   - Templates per perspective: {len(first_person_templates)} + {len(third_person_templates)}")
+    
+    # Phase 1: Coverage Phase (using improved template selection)
+    print(f"\n🎯 PHASE 1: Enhanced Coverage Phase")
+    print(f"   - Goal: 100% coverage using improved pre-validation selection")
+    
+    coverage_records_generated = 0
+    max_coverage_attempts = num_records // 2  # Allow up to half the records for coverage
+    
+    for attempt in range(max_coverage_attempts):
+        if manager.has_complete_coverage():
+            break
+            
+        # Determine perspective for this record
+        if coverage_records_generated < first_person_count:
+            perspective = "first_person"
+        else:
+            perspective = "third_person"
+        
+        # Use improved template selection
+        template_class = manager.select_next_template(perspective)
+        
+        # Generate record with realistic data
+        for retry in range(Config.MAX_RETRIES):
+            try:
+                template_id = coverage_records_generated
+                template = template_class(template_id, base_date, perspective)
+                text, entities_meta, relations_meta = template.generate()
+                
+                # Apply realistic data improvements (Issue #4)
+                text = _apply_realistic_data_improvements(text)
+                
+                # Create record
+                record = _create_improved_record(template_id, base_date, text, entities_meta, relations_meta, 
+                                               template_class.__name__, perspective)
+                
+                dataset.append(record)
+                manager.record_template_usage(template_class, entities_meta, relations_meta)
+                coverage_records_generated += 1
+                break
+                
+            except Exception as e:
+                error_key = type(e).__name__
+                failure_reasons[error_key] = failure_reasons.get(error_key, 0) + 1
+                if retry == Config.MAX_RETRIES - 1:
+                    failed_generations += 1
+        
+        # Progress reporting with fixed coverage display (Issue #2)
+        if coverage_records_generated % 50 == 0 or manager.has_complete_coverage():
+            coverage_stats = manager.get_coverage_stats()
+            print(f"   Coverage Phase: {coverage_records_generated} records | "
+                  f"Entities: {coverage_stats['entity_coverage_percent']:.1f}% | "
+                  f"Relations: {coverage_stats['relation_coverage_percent']:.1f}% | "
+                  f"Balance: {coverage_stats['balance_score']:.1f}%")
+    
+    if manager.has_complete_coverage():
+        print(f"   ✅ 100% COVERAGE ACHIEVED! ({coverage_records_generated} records used)")
+    else:
+        coverage_stats = manager.get_coverage_stats()
+        print(f"   ⚠️  Partial coverage: {coverage_stats['entity_coverage_percent']:.1f}% entities, "
+              f"{coverage_stats['relation_coverage_percent']:.1f}% relations")
+    
+    # Phase 2: Balanced Distribution Phase
+    print(f"\n⚖️  PHASE 2: Enhanced Balanced Phase with 3x Rule Enforcement")
+    manager.generation_phase = "balanced"
+    
+    remaining_records = num_records - len(dataset)
+    for i in range(remaining_records):
+        # Determine perspective
+        current_first_person = sum(1 for r in dataset if r.get('context', {}).get('Perspective') == 'first_person')
+        perspective = "first_person" if current_first_person < first_person_count else "third_person"
+        
+        # Use improved template selection with frequency cap pre-validation
+        template_class = manager.select_next_template(perspective)
+        
+        for retry in range(Config.MAX_RETRIES):
+            try:
+                template_id = len(dataset)
+                template = template_class(template_id, base_date, perspective)
+                text, entities_meta, relations_meta = template.generate()
+                
+                # Apply realistic data improvements
+                text = _apply_realistic_data_improvements(text)
+                
+                record = _create_improved_record(template_id, base_date, text, entities_meta, relations_meta,
+                                               template_class.__name__, perspective)
+                
+                dataset.append(record)
+                manager.record_template_usage(template_class, entities_meta, relations_meta)
+                break
+                
+            except Exception as e:
+                error_key = type(e).__name__
+                failure_reasons[error_key] = failure_reasons.get(error_key, 0) + 1
+                if retry == Config.MAX_RETRIES - 1:
+                    failed_generations += 1
+        
+        # Enhanced progress reporting with proper balance scoring
+        if (i + 1) % Config.PROGRESS_INTERVAL == 0 or i + 1 == remaining_records:
+            coverage_stats = manager.get_coverage_stats()
+            print(f"   Balanced Phase: {len(dataset)}/{num_records} | "
+                  f"Balance: {coverage_stats['balance_score']:.1f}% | "
+                  f"Entity: {coverage_stats['entity_balance']:.1f}% | "
+                  f"Relation: {coverage_stats['relation_balance']:.1f}%")
+    
+    # Final reporting with fixed statistics
+    final_coverage_stats = manager.get_coverage_stats()
+    print(f"\n🎉 IMPROVED GENERATION COMPLETE!")
+    print(f"   - Total records: {len(dataset)}/{num_records}")
+    print(f"   - Entity coverage: {final_coverage_stats['entity_coverage_percent']:.1f}% "
+          f"({final_coverage_stats['covered_entities']}/{final_coverage_stats['total_entities']})")
+    print(f"   - Relation coverage: {final_coverage_stats['relation_coverage_percent']:.1f}% "
+          f"({final_coverage_stats['covered_relations']}/{final_coverage_stats['total_relations']})")
+    print(f"   - Overall balance: {final_coverage_stats['balance_score']:.1f}%")
+    print(f"   - Entity balance: {final_coverage_stats['entity_balance']:.1f}%")  
+    print(f"   - Relation balance: {final_coverage_stats['relation_balance']:.1f}%")
+    
+    # Generate improved statistics
+    stats = generate_balanced_statistics(dataset, failed_generations, failure_reasons, 
+                                       quality_issues, len(first_person_templates + third_person_templates), manager)
+    
+    return {
+        "dataset": dataset,
+        "statistics": stats,
+        "metadata": {
+            "generation_method": "improved_balanced_with_critical_fixes",
+            "num_records_requested": num_records,
+            "num_records_generated": len(dataset),
+            "critical_fixes_applied": [
+                "pre_validation_template_selection",
+                "fixed_coverage_statistics", 
+                "enhanced_template_rotation",
+                "realistic_data_generation",
+                "proper_balance_scoring_3x_rule"
+            ],
+            "balance_manager": manager.get_usage_distribution(),
+            "coverage_stats": manager.get_coverage_stats()
+        }
+    }
+
+def _apply_realistic_data_improvements(text: str) -> str:
+    """Apply realistic data improvements to fix Issue #4."""
+    # Replace unrealistic durations with realistic ones
+    import re
+    
+    # Fix unrealistic work durations
+    work_pattern = r"(\d+\s+minutes?\s+(?:work\s+)?experience\s+at)"
+    if re.search(work_pattern, text, re.IGNORECASE):
+        realistic_duration = get_realistic_work_duration()
+        text = re.sub(work_pattern, f"{realistic_duration} experience at", text, flags=re.IGNORECASE)
+    
+    # Fix unrealistic money amounts in inappropriate contexts
+    money_pattern = r"\$(\d+)"
+    matches = re.findall(money_pattern, text)
+    for match in matches:
+        amount = int(match)
+        if amount < 100 and ("salary" in text.lower() or "income" in text.lower()):
+            # Replace with realistic amount
+            realistic_amount = get_realistic_money_amount()
+            text = text.replace(f"${match}", realistic_amount)
+    
+    return text
+
+def _create_improved_record(template_id: int, base_date: datetime, text: str, 
+                          entities_meta: Dict, relations_meta: List, 
+                          template_name: str, perspective: str) -> Dict:
+    """Create a record with improved validation."""
+    # Convert entities metadata to standard format
+    entities = []
+    for entity_id, (entity_type, entity_text) in entities_meta.items():
+        entities.append({
+            "id": entity_id,
+            "type": entity_type,
+            "text": entity_text
+        })
+    
+    # Convert relations metadata to standard format
+    relations = []
+    for rel_type, subj_id, obj_id in relations_meta:
+        relations.append({
+            "type": rel_type,
+            "subject": subj_id,
+            "object": obj_id
+        })
+    
+    record = {
+        "id": str(uuid.uuid4()),
+        "text": text,
+        "entities": entities,
+        "relations": relations,
+        "context": {
+            "Date": base_date.strftime("%Y-%m-%d"),
+            "User": Config.CURRENT_USER_LOGIN,
+            "Perspective": perspective,
+            "Template": template_name,
+            "TemplateId": template_id
+        }
+    }
+    
+    return record
+
 def generate_balanced_statistics(dataset: List[Dict], failed_generations: int, failure_reasons: Dict, 
                                quality_issues: Dict, num_templates: int, manager: BalancedTemplateManager) -> Dict:
     """Generate enhanced statistics with balance scoring and detailed coverage analysis."""
@@ -5397,24 +6112,69 @@ def print_balanced_statistics(stats: Dict):
             print(f"  - {reason}: {count}")
 
 def main():
-    """Main execution function with support for both generation methods."""
+    """Main execution function with support for multiple generation methods."""
     import sys
     
     # Check for command line arguments to choose generation method
-    use_balanced_generation = False
+    generation_method = "original"  # default
     if len(sys.argv) > 1:
-        if sys.argv[1].lower() in ['balanced', 'balance', 'enhanced', 'b']:
-            use_balanced_generation = True
-        elif sys.argv[1].lower() in ['original', 'standard', 'o']:
-            use_balanced_generation = False
+        arg = sys.argv[1].lower()
+        if arg in ['balanced', 'balance', 'enhanced', 'b']:
+            generation_method = "balanced"
+        elif arg in ['improved', 'fixed', 'i', 'f']:
+            generation_method = "improved"
+        elif arg in ['original', 'standard', 'o']:
+            generation_method = "original"
         else:
-            print("Usage: python data.py [balanced|original]")
+            print("Usage: python data.py [improved|balanced|original]")
+            print("  improved/i/fixed/f:  Use improved generation with critical fixes")
             print("  balanced/b/enhanced: Use enhanced balanced generation")
             print("  original/o/standard: Use original generation (default)")
             return
     
     try:
-        if use_balanced_generation:
+        if generation_method == "improved":
+            print("🚀 Using IMPROVED Balanced Generation with Critical Fixes")
+            result = generate_improved_balanced_dataset()
+            
+            if result["dataset"]:
+                filename = save_dataset(result)
+                print_balanced_statistics(result["statistics"])
+                
+                print(f"\nDataset saved to: {filename}")
+                
+                # Show enhanced metadata with fixes applied
+                metadata = result.get("metadata", {})
+                coverage_stats = metadata.get("coverage_stats", {})
+                print(f"\n🎯 Critical Fixes Applied:")
+                for fix in metadata.get("critical_fixes_applied", []):
+                    print(f"   ✅ {fix.replace('_', ' ').title()}")
+                
+                print(f"\n📊 Improved Results:")
+                print(f"   - Final balance score: {coverage_stats.get('balance_score', 0):.1f}%")
+                print(f"   - Entity balance: {coverage_stats.get('entity_balance', 0):.1f}%")
+                print(f"   - Relation balance: {coverage_stats.get('relation_balance', 0):.1f}%")
+                print(f"   - Entity coverage: {coverage_stats.get('entity_coverage_percent', 0):.1f}% "
+                      f"({coverage_stats.get('covered_entities', 0)}/{coverage_stats.get('total_entities', 0)})")
+                print(f"   - Relation coverage: {coverage_stats.get('relation_coverage_percent', 0):.1f}% "
+                      f"({coverage_stats.get('covered_relations', 0)}/{coverage_stats.get('total_relations', 0)})")
+                
+                # Show sample records with improved balance analysis
+                print(f"\nSample Records with Improved Balance:")
+                
+                sample_records = random.sample(result["dataset"], min(3, len(result["dataset"])))
+                for i, record in enumerate(sample_records):
+                    print(f"\n--- Improved Sample {i+1} ---")
+                    print(f"Text: {record['text']}")
+                    print(f"Relations: {[r['type'] for r in record['relations']]}")
+                    print(f"Entities: {[e['type'] for e in record.get('entities', [])]}")
+                    print(f"Template: {record.get('context', {}).get('Template', 'unknown')}")
+                    
+            else:
+                print("ERROR: No records were successfully generated with improved method!")
+                print_balanced_statistics(result["statistics"])
+        
+        elif generation_method == "balanced":
             print("🎯 Using Enhanced Balanced Generation Method")
             result = generate_balanced_dataset()
             
@@ -5447,7 +6207,7 @@ def main():
             else:
                 print("ERROR: No records were successfully generated with balanced method!")
                 print_balanced_statistics(result["statistics"])
-        
+
         else:
             print("📊 Using Original Generation Method")
             result = generate_dataset()
