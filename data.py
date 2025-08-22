@@ -4878,44 +4878,48 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
         
     def is_template_viable(self, template_class, perspective: str) -> Tuple[bool, str]:
         """
-        Pre-validate template to check if it can be used without violating frequency caps.
+        More permissive template viability check that focuses on severe imbalances only.
         
-        This is the core fix for Issue #1: Check frequency caps BEFORE template selection.
-        Uses tolerance to avoid being too strict during transition from coverage to balanced phase.
+        This allows for better balance without being too restrictive.
         """
         try:
             # Pre-generate to see what types this template would produce
             template = template_class(0, datetime.now(), perspective)
             _, entities_meta, relations_meta = template.generate()
             
-            violated_types = []
-            severe_violations = 0
+            usage_dict_entity = self.entity_type_usage
+            usage_dict_relation = self.relation_type_usage
             
-            # Check each entity type this template would produce
+            # Calculate current distribution statistics
+            entity_counts = [count for count in usage_dict_entity.values() if count > 0]
+            relation_counts = [count for count in usage_dict_relation.values() if count > 0]
+            
+            if not entity_counts or not relation_counts:
+                return True, "Early generation phase"
+            
+            entity_max = max(entity_counts)
+            entity_avg = sum(entity_counts) / len(entity_counts)
+            relation_max = max(relation_counts)
+            relation_avg = sum(relation_counts) / len(relation_counts)
+            
+            severe_entity_violations = 0
+            severe_relation_violations = 0
+            
+            # Check for severe entity type violations (only reject if way over average)
             for _, (entity_type, _) in entities_meta.items():
-                current_usage = self.entity_type_usage.get(entity_type, 0)
-                cap = self.get_frequency_cap(entity_type, is_entity=True)
-                
-                if current_usage >= cap:
-                    # Calculate severity of violation
-                    if current_usage >= cap * 2:  # 2x over cap is severe
-                        severe_violations += 1
-                    violated_types.append(f"E:{entity_type}({current_usage}/{cap})")
+                current_usage = usage_dict_entity.get(entity_type, 0)
+                if current_usage > entity_avg * 2:  # More than 2x average
+                    severe_entity_violations += 1
             
-            # Check each relation type this template would produce  
+            # Check for severe relation type violations
             for rel_type, _, _ in relations_meta:
-                current_usage = self.relation_type_usage.get(rel_type, 0)
-                cap = self.get_frequency_cap(rel_type, is_entity=False)
-                
-                if current_usage >= cap:
-                    # Calculate severity of violation
-                    if current_usage >= cap * 2:  # 2x over cap is severe
-                        severe_violations += 1
-                    violated_types.append(f"R:{rel_type}({current_usage}/{cap})")
+                current_usage = usage_dict_relation.get(rel_type, 0)
+                if current_usage > relation_avg * 2:  # More than 2x average
+                    severe_relation_violations += 1
             
-            # Only reject templates with severe violations or too many minor violations
-            if severe_violations > 0 or len(violated_types) > 5:
-                return False, f"Severe violations: {severe_violations}, total: {len(violated_types)}"
+            # Only reject templates that would create very severe imbalances
+            if severe_entity_violations > 2 or severe_relation_violations > 2:
+                return False, f"Severe imbalance: {severe_entity_violations}E, {severe_relation_violations}R"
             else:
                 return True, "Template viable"
                 
@@ -5087,9 +5091,10 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
     
     def get_frequency_cap(self, type_name: str, is_entity: bool = True) -> int:
         """
-        Simplified frequency cap calculation with strict 3x rule enforcement.
+        Progressive frequency cap calculation that prevents massive imbalances.
         
         This fixes the broken frequency capping logic from Issue #1.
+        Uses a progressive approach that tightens caps as dataset grows.
         """
         if not self.strict_3x_enforcement:
             return super().get_frequency_cap(type_name, is_entity)
@@ -5098,32 +5103,27 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
         used_counts = [count for count in usage_dict.values() if count > 0]
         
         if not used_counts:
-            # During coverage phase, be permissive to achieve coverage
-            if self.generation_phase == "coverage":
-                return 1000  # Very high cap during coverage
-            else:
-                return 5  # Initial cap for balanced phase
+            return 50  # Initial permissive cap
         
         min_usage = min(used_counts)
+        current_usage = usage_dict.get(type_name, 0)
         
-        # During coverage phase, allow high usage to achieve coverage
-        if self.generation_phase == "coverage":
-            # More permissive during coverage, but not unlimited
+        # Calculate total records generated so far
+        total_generated = sum(used_counts) // (3 if is_entity else 2)  # Estimate based on average entities/relations per record
+        
+        # Progressive 3x rule: Start permissive, gradually tighten
+        if total_generated < 50:
+            # Very early phase: allow up to 10x minimum to achieve coverage
             return max(min_usage * 10, 20)
+        elif total_generated < 100:
+            # Early phase: allow up to 5x minimum
+            return max(min_usage * 5, 10)
+        elif total_generated < 150:
+            # Mid phase: allow up to 4x minimum 
+            return max(min_usage * 4, 6)
         else:
-            # Gradual 3x rule during balanced phase
-            # Start with more permissive caps and gradually tighten
-            total_types = self.total_entities if is_entity else self.total_relations
-            ideal_per_type = max(1, self.target_records // total_types)
-            
-            # Use the higher of:
-            # 1. 3x the minimum usage
-            # 2. A reasonable per-type distribution
-            strict_3x_cap = min_usage * 3
-            reasonable_cap = max(ideal_per_type, min_usage + 5)
-            
-            # During early balanced phase, be more permissive
-            return max(strict_3x_cap, reasonable_cap)
+            # Late phase: enforce strict 3x rule
+            return max(min_usage * 3, 3)
     
     def calculate_proper_balance_score(self) -> float:
         """
@@ -5215,6 +5215,22 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
             "relation_balance": self._calculate_type_balance(is_entity=False),
             "uncovered_entities": len(all_entity_types) - covered_entity_count,
             "uncovered_relations": len(all_relation_types) - covered_relation_count
+        }
+    
+    def calculate_entity_relation_balance(self) -> Dict[str, float]:
+        """Override to use proper 3x rule balance calculation."""
+        entity_balance = self._calculate_type_balance(is_entity=True)
+        relation_balance = self._calculate_type_balance(is_entity=False)
+        template_balance = self._calculate_template_balance()
+        
+        # Use improved overall balance calculation
+        overall_balance = self.calculate_proper_balance_score()
+        
+        return {
+            "entity_balance": entity_balance,
+            "relation_balance": relation_balance,
+            "overall_balance": overall_balance,
+            "template_balance": template_balance
         }
     
     def select_next_template(self, perspective: str = None) -> object:
