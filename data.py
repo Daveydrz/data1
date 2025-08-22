@@ -4247,7 +4247,24 @@ def generate_dataset(num_records: int = None) -> Dict:
     failure_reasons = {}
     quality_issues = {}
     
-    # Define template classes by perspective
+    # Template lists are defined below with the complete lists including specialized templates
+    # that ensure 100% coverage of all entity and relation types
+    
+    # Calculate target counts
+    first_person_target = int(num_records * Config.FIRST_PERSON_RATIO)
+    third_person_target = num_records - first_person_target
+    
+    print(f"Starting expanded relations dataset generation:")
+    print(f"  - Total records: {num_records}")
+    print(f"  - First-person: {first_person_target} ({Config.FIRST_PERSON_RATIO:.0%})")
+    print(f"  - Third-person: {third_person_target} ({Config.THIRD_PERSON_RATIO:.0%})")
+    print(f"  - Entity types supported: {len([attr for attr in dir(EntityTypes) if not attr.startswith('_')])}")
+    print(f"  - Relation types supported: {len([attr for attr in dir(RelationTypes) if not attr.startswith('_')])}")
+    
+    # Generation is handled by the complete balanced template manager code below
+    # after the complete template lists are defined
+    
+    # Complete template lists with specialized templates
     first_person_templates = [
         FirstPersonExpandedTravelTemplate,
         FirstPersonObjectOwnershipTemplate,
@@ -4281,17 +4298,16 @@ def generate_dataset(num_records: int = None) -> Dict:
         FirstPersonHealthScareTemplate,
         FirstPersonFailureLessonTemplate,
         FirstPersonMentorshipMemoryTemplate,
-        FirstPersonLifeStageReflectionTemplate,
-        FirstPersonCulturalLearningTemplate,
-        FirstPersonIndustryExpertiseTemplate,
-        FirstPersonTimeAmountTemplate,
-        FirstPersonThinkingProcessTemplate,
-        FirstPersonRegretAnticipationTemplate,
-        FirstPersonCompleteSensoryTemplate,
-        FirstPersonRepeatingRoutineTemplate,
-        FirstPersonComplexMemoryTemplate,
-        FirstPersonMemoryRecallTemplate,
+        FirstPersonFinalCognitiveTemplate,
+        FirstPersonAllSensoryTemplate,
+        FirstPersonTimeScheduleTemplate,
+        FirstPersonLocationExpertiseTraitTemplate,
+        FirstPersonBeliefsOpinionsTemplate,
+        FirstPersonHealthFinanceTemplate,
+        FirstPersonIdentityNicknameTemplate,
+        FirstPersonRareEntityTypesTemplate,
         FirstPersonCognitiveProcessTemplate,
+        FirstPersonCompleteSensoryTemplate,
         FirstPersonTemporalRoutineTemplate,
         FirstPersonLocationExpertiseTemplate,
         FirstPersonHopesPlanningTemplate,
@@ -4300,23 +4316,58 @@ def generate_dataset(num_records: int = None) -> Dict:
         FirstPersonFinancialGoalsTemplate,
         FirstPersonNicknameIdentityTemplate,
         FirstPersonIdeaInnovationTemplate,
-        FirstPersonComprehensiveCoverageTemplate,
+        FirstPersonLifeStageReflectionTemplate,
+        FirstPersonCulturalLearningTemplate,
+        FirstPersonIndustryExpertiseTemplate,
+        FirstPersonThinkingProcessTemplate,
+        FirstPersonRegretAnticipationTemplate,
+        FirstPersonCompleteSensoryTemplate,
+        FirstPersonRepeatingRoutineTemplate,
+        FirstPersonComplexMemoryTemplate,
+        FirstPersonMemoryRecallTemplate,
         FirstPersonAchievementTemplate,
         FirstPersonMediaPreferencesTemplate,
         FirstPersonLifeEventsTemplate,
         FirstPersonOrganizationContextTemplate,
         FirstPersonPlatformContextTemplate,
-        FirstPersonFunctionWordTemplate
+        FirstPersonFunctionWordTemplate,
+        # New templates for underused entity and relation coverage
+        MediaConsumptionTemplate,
+        ReadingListeningTemplate,
+        OwnershipAndObjectsTemplate,
+        EventParticipationTemplate,
+        FoodAndBusinessTemplate,
+        SpatialUtilityTemplate,
+        TravelTransportTemplate,
+        CulturalCommunityTemplate,
+        LearningMethodTemplate,
+        MentorshipAchievementTemplate,
+        BudgetIndustryTimelineTemplate,
+        BusinessProximityTemplate
     ]
     
     third_person_templates = [
+        ThirdPersonPetTemplate,
+        ThirdPersonComprehensiveMemoryTemplate,
+        ThirdPersonPetCareTemplate,
+        ThirdPersonAdvancedCognitiveTemplate,
+        ThirdPersonTemporalExpertiseTemplate,
+        ThirdPersonRelationshipMaintainerTemplate,
+        ThirdPersonIndustryInnovationTemplate,
+        ThirdPersonLifeStageWisdomTemplate,
+        ThirdPersonCulturalPreservationTemplate,
+        ThirdPersonLifeTransitionTemplate,
+        ThirdPersonCulturalExperienceTemplate,
+        ThirdPersonGenerosityTemplate,
+        ThirdPersonSkillMasteryTemplate,
+        ThirdPersonCommunityLeadershipTemplate,
+        ThirdPersonVehicleOwnershipTemplate,
+        ThirdPersonMediaProductionTemplate,
+        ThirdPersonWeatherImpactTemplate,
         ThirdPersonGroupMembershipTemplate,
         ThirdPersonFamilyRelationshipTemplate,
         ThirdPersonCausationTemplate,
         ThirdPersonLocationProximityTemplate,
-        ThirdPersonVehicleOwnershipTemplate,
-        ThirdPersonMediaProductionTemplate,
-        ThirdPersonWeatherImpactTemplate,
         ThirdPersonPlatformInfluenceTemplate,
         ThirdPersonRoomOrganizationTemplate,
         ThirdPersonGenrePreferenceTemplate,
@@ -4334,33 +4385,22 @@ def generate_dataset(num_records: int = None) -> Dict:
         ThirdPersonEquipmentSharingTemplate,
         ThirdPersonTimeManagementTemplate,
         ThirdPersonBeliefInfluenceTemplate,
-        ThirdPersonLifeTransitionTemplate,
-        ThirdPersonCulturalExperienceTemplate,
-        ThirdPersonGenerosityTemplate,
-        ThirdPersonSkillMasteryTemplate,
-        ThirdPersonCommunityLeadershipTemplate,
-        ThirdPersonIndustryInnovationTemplate,
-        ThirdPersonLifeStageWisdomTemplate,
-        ThirdPersonCulturalPreservationTemplate,
-        ThirdPersonComprehensiveMemoryTemplate,
-        ThirdPersonPetCareTemplate,
-        ThirdPersonAdvancedCognitiveTemplate,
-        ThirdPersonTemporalExpertiseTemplate,
-        ThirdPersonRelationshipMaintainerTemplate,
         ThirdPersonLearningMentorshipTemplate,
-        ThirdPersonEmotionalJourneyTemplate
+        ThirdPersonEmotionalJourneyTemplate,
+        # New templates for underused entity and relation coverage (work with both perspectives)
+        MediaConsumptionTemplate,
+        ReadingListeningTemplate,
+        OwnershipAndObjectsTemplate,
+        EventParticipationTemplate,
+        FoodAndBusinessTemplate,
+        SpatialUtilityTemplate,
+        TravelTransportTemplate,
+        CulturalCommunityTemplate,
+        LearningMethodTemplate,
+        MentorshipAchievementTemplate,
+        BudgetIndustryTimelineTemplate,
+        BusinessProximityTemplate
     ]
-    
-    # Calculate target counts
-    first_person_target = int(num_records * Config.FIRST_PERSON_RATIO)
-    third_person_target = num_records - first_person_target
-    
-    print(f"Starting expanded relations dataset generation:")
-    print(f"  - Total records: {num_records}")
-    print(f"  - First-person: {first_person_target} ({Config.FIRST_PERSON_RATIO:.0%})")
-    print(f"  - Third-person: {third_person_target} ({Config.THIRD_PERSON_RATIO:.0%})")
-    print(f"  - Entity types supported: {len([attr for attr in dir(EntityTypes) if not attr.startswith('_')])}")
-    print(f"  - Relation types supported: {len([attr for attr in dir(RelationTypes) if not attr.startswith('_')])}")
     
     # Initialize balanced template manager
     manager = BalancedTemplateManager(first_person_templates, third_person_templates)
