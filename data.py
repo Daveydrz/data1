@@ -4785,33 +4785,62 @@ class BalancedTemplateManager:
             return self.MAXIMUM_QUOTA_PER_TYPE
     
     def can_use_template(self, template_class, perspective: str = "first_person"):
-        """Check if a template can be used - prioritize templates that help balance."""
+        """STRICT QUOTA ENFORCEMENT: Check if template can be used without violating mathematical balance quotas."""
         try:
             # Test generate to see what entities/relations this template produces
             template = template_class(0, datetime.now(), perspective)
             _, entities_meta, relations_meta = template.generate()
             
-            # Count how many types this template would help vs hurt
-            helpful_count = 0
-            harmful_count = 0
+            # BALANCED QUOTA ENFORCEMENT: Block templates that significantly violate quotas
+            quota_violations = 0
+            underrepresented_help = 0
+            moderate_overrep = 0
             
+            # Check entity quota violations
             for _, (entity_type, _) in entities_meta.items():
                 current_usage = self.entity_type_usage.get(entity_type, 0)
-                if current_usage < self.TARGET_QUOTA_PER_TYPE:
-                    helpful_count += 1  # This type needs more
+                
+                # STRICTLY BLOCK if this would exceed MAXIMUM quota by a lot
+                if current_usage >= self.MAXIMUM_QUOTA_PER_TYPE * 1.2:  # 20% buffer beyond max
+                    quota_violations += 1
+                # Track moderate overrepresentation  
                 elif current_usage >= self.MAXIMUM_QUOTA_PER_TYPE:
-                    harmful_count += 1  # This type is overrepresented
+                    moderate_overrep += 1
+                # Count help for underrepresented types
+                elif current_usage < self.TARGET_QUOTA_PER_TYPE:
+                    underrepresented_help += 1
             
+            # Check relation quota violations  
             for rel_type, _, _ in relations_meta:
                 current_usage = self.relation_type_usage.get(rel_type, 0)
-                if current_usage < self.TARGET_QUOTA_PER_TYPE:
-                    helpful_count += 1  # This type needs more
+                
+                # STRICTLY BLOCK if this would exceed MAXIMUM quota by a lot
+                if current_usage >= self.MAXIMUM_QUOTA_PER_TYPE * 1.2:  # 20% buffer beyond max
+                    quota_violations += 1
+                # Track moderate overrepresentation
                 elif current_usage >= self.MAXIMUM_QUOTA_PER_TYPE:
-                    harmful_count += 1  # This type is overrepresented
+                    moderate_overrep += 1
+                # Count help for underrepresented types
+                elif current_usage < self.TARGET_QUOTA_PER_TYPE:
+                    underrepresented_help += 1
             
-            # Allow template if it helps more than it hurts
-            # Or if it has no harmful types
-            return helpful_count > harmful_count or harmful_count == 0
+            # BALANCED ENFORCEMENT RULES:
+            # 1. ABSOLUTELY block templates with severe violations (20% over max)
+            # 2. Allow moderate overrepresentation if template helps many underrepresented types
+            # 3. ALWAYS prefer templates that help underrepresented types
+            
+            if quota_violations == 0 and moderate_overrep == 0:
+                # Perfect template - no violations
+                return True
+            elif quota_violations == 0 and moderate_overrep > 0 and underrepresented_help > moderate_overrep * 2:
+                # Allow moderate overrep if it helps 2x more underrepresented types
+                return True
+            elif quota_violations > 0 and underrepresented_help > quota_violations * 5:
+                # Allow severe violations only if it helps 5x more underrepresented types (very high bar)
+                return True
+            else:
+                # Block template - too many violations or insufficient help
+                return False
             
         except Exception:
             return False  # If template fails, block it
@@ -4902,23 +4931,23 @@ class BalancedTemplateManager:
         target_entities_per_type = max(1, target_records // self.total_entities)  # At least 1 per type
         target_relations_per_type = max(1, target_records // self.total_relations)  # At least 1 per type
         
-        # Set ABSOLUTELY ULTRA-STRICT quotas for PERFECT 100% BALANCE targeting 90-100% balance scores
-        # Reduce variance to almost zero to force near-perfect mathematical distribution
+        # Set BALANCED STRICT quotas for PERFECT 100% BALANCE targeting 90-100% balance scores
+        # Allow reasonable variance while enforcing strict mathematical limits
         if target_records < 500:
-            # Small datasets: extremely strict balance
-            variance_multiplier = 1.05  # Allow only 5% variance for small datasets
+            # Small datasets: balanced strict
+            variance_multiplier = 1.5  # Allow 50% variance for small datasets  
         elif target_records < 2000:
-            # Medium datasets: almost perfect balance requirements
-            variance_multiplier = 1.03  # Allow only 3% variance
+            # Medium datasets: strict balance requirements
+            variance_multiplier = 1.3  # Allow 30% variance
         else:
-            # Large datasets: MATHEMATICALLY PERFECT balance requirements
-            variance_multiplier = 1.02  # Allow only 2% variance for massive datasets
+            # Large datasets: very strict balance requirements
+            variance_multiplier = 1.2  # Allow 20% variance for large datasets
         
-        # Calculate MATHEMATICALLY PERFECT quotas for ULTRA PERFECT BALANCE SYSTEM
-        min_quota = max(1, int(target_entities_per_type * 0.95))  # At least 95% of target (extremely high)
+        # Calculate BALANCED quotas for MATHEMATICAL PERFECT BALANCE SYSTEM
+        min_quota = max(1, int(target_entities_per_type * 0.7))  # At least 70% of target
         target_quota = target_entities_per_type
-        perfect_quota = int(target_entities_per_type * 1.02)  # Allow only 2% overage (not 5%)
-        max_quota = int(target_entities_per_type * variance_multiplier)  # MATHEMATICALLY-STRICT scaling
+        perfect_quota = int(target_entities_per_type * 1.1)  # Allow 10% overage
+        max_quota = int(target_entities_per_type * variance_multiplier)  # Balanced scaling with variance
         
         self.MINIMUM_QUOTA_PER_TYPE = min_quota
         self.TARGET_QUOTA_PER_TYPE = target_quota
@@ -5062,6 +5091,27 @@ class BalancedTemplateManager:
             templates = self.all_templates
         
         print(f"🔍 Templates available: {len(templates)}")
+        
+        # QUOTA ENFORCEMENT: Filter out templates that would violate strict balance quotas
+        quota_compliant_templates = []
+        quota_violations = 0
+        
+        for template_class in templates:
+            if self.can_use_template(template_class, perspective):
+                quota_compliant_templates.append(template_class)
+            else:
+                quota_violations += 1
+        
+        print(f"🛡️ QUOTA ENFORCEMENT: {len(quota_compliant_templates)}/{len(templates)} templates quota-compliant")
+        print(f"   - Blocked {quota_violations} templates for quota violations")
+        
+        # Use quota-compliant templates for selection
+        if quota_compliant_templates:
+            templates = quota_compliant_templates
+            print(f"   - Proceeding with {len(templates)} quota-compliant templates")
+        else:
+            print(f"   - ⚠️ NO quota-compliant templates! Using all templates as fallback")
+            # Keep original templates as fallback if no compliant ones exist
         
         # ABSOLUTE PRIORITY: Check for completely missing entity or relation types
         missing_entities = [et for et, count in self.entity_type_usage.items() if count == 0]
