@@ -5249,7 +5249,7 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
         CRITICAL: Check if template would violate 3x rule BEFORE selection.
         
         This is the missing hard rejection logic that prevents massive imbalances.
-        Applies different strictness based on generation phase.
+        Uses progressive strictness based on generation progress.
         """
         try:
             # Test generate to see what types this template would produce
@@ -5266,16 +5266,27 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
             entity_min = min(entity_counts)
             relation_min = min(relation_counts)
             
-            # Phase-aware 3x rule enforcement
+            # Progressive strictness based on generation progress
+            total_generated = sum(entity_counts) // 3  # Rough estimate of records generated
+            
             if self.generation_phase == "coverage":
-                # During coverage phase, be more permissive to achieve coverage
-                # Only reject if extremely unbalanced (10x rule instead of 3x)
-                entity_cap = entity_min * 10
-                relation_cap = relation_min * 10
+                # During coverage phase, be very permissive
+                entity_cap = entity_min * 20  # 20x rule during coverage
+                relation_cap = relation_min * 20
             else:
-                # During balanced phase, enforce strict 3x rule
-                entity_cap = entity_min * 3
-                relation_cap = relation_min * 3
+                # During balanced phase, use progressive strictness
+                if total_generated < 100:
+                    # Early balanced phase: 10x rule
+                    entity_cap = entity_min * 10
+                    relation_cap = relation_min * 10
+                elif total_generated < 150:
+                    # Mid balanced phase: 6x rule
+                    entity_cap = entity_min * 6
+                    relation_cap = relation_min * 6
+                else:
+                    # Late balanced phase: strict 3x rule
+                    entity_cap = entity_min * 3
+                    relation_cap = relation_min * 3
             
             # Check if ANY entity type would exceed the cap
             for _, (entity_type, _) in entities_meta.items():
@@ -5344,7 +5355,7 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
     def get_least_violating_template(self, templates: List, perspective: str) -> object:
         """
         Emergency fallback: when all templates violate caps, select least violating.
-        Uses phase-aware violation calculation.
+        Uses progressive violation calculation based on generation progress.
         """
         violation_scores = {}
         
@@ -5355,13 +5366,22 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
         entity_min = min(entity_counts) if entity_counts else 1
         relation_min = min(relation_counts) if relation_counts else 1
         
-        # Phase-aware caps
+        # Progressive caps based on generation progress
+        total_generated = sum(entity_counts) // 3 if entity_counts else 0
+        
         if self.generation_phase == "coverage":
-            entity_cap = entity_min * 10  # More permissive during coverage
-            relation_cap = relation_min * 10
+            entity_cap = entity_min * 20  # Very permissive during coverage
+            relation_cap = relation_min * 20
         else:
-            entity_cap = entity_min * 3   # Strict during balanced phase
-            relation_cap = relation_min * 3
+            if total_generated < 100:
+                entity_cap = entity_min * 10  # Early balanced phase
+                relation_cap = relation_min * 10
+            elif total_generated < 150:
+                entity_cap = entity_min * 6   # Mid balanced phase
+                relation_cap = relation_min * 6
+            else:
+                entity_cap = entity_min * 3   # Late balanced phase
+                relation_cap = relation_min * 3
         
         for template_class in templates:
             try:
