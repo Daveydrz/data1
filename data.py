@@ -4438,28 +4438,40 @@ class BalancedTemplateManager:
         self.generation_phase = phase
     
     def get_frequency_cap(self, type_name: str, is_entity: bool = True) -> int:
-        """Calculate strict frequency cap based on target equal distribution."""
+        """Calculate frequency cap based on 3x rule and dataset size."""
         if self.target_records == 0:
             return float('inf')  # No cap if target not set
         
-        # Calculate strict equal distribution targets
-        if is_entity:
-            current_usage = self.entity_type_usage.get(type_name, 0)
-            # For 1000 records and 68 entities: ~14.7 per type
-            target_per_type = self.target_records // self.total_entities
-            max_per_type = target_per_type + 8  # Allow small variance (e.g., 22 max for entities)
-        else:
-            current_usage = self.relation_type_usage.get(type_name, 0)
-            # For 1000 records and 104 relations: ~9.6 per type  
-            target_per_type = self.target_records // self.total_relations
-            max_per_type = target_per_type + 5  # Allow small variance (e.g., 14 max for relations)
-        
+        # During coverage phase, allow more freedom but not unlimited
         if self.generation_phase == "coverage":
-            # During coverage phase, allow more but not unlimited
-            return max_per_type + 5
-        else:
-            # During balanced phase, enforce strict caps
-            return max_per_type
+            # For coverage phase, use simple per-type target
+            total_types = self.total_entities if is_entity else self.total_relations
+            base_target = max(1, self.target_records // total_types)
+            return base_target + 3  # Allow some variance during coverage
+        
+        # During balanced phase, enforce balanced 3x rule
+        usage_dict = self.entity_type_usage if is_entity else self.relation_type_usage
+        used_counts = [count for count in usage_dict.values() if count > 0]
+        
+        if not used_counts:
+            return 5  # Initial cap if no usage yet
+        
+        min_usage = min(used_counts)
+        
+        # Calculate ideal target per type based on remaining records
+        total_types = self.total_entities if is_entity else self.total_relations
+        ideal_per_type = max(1, self.target_records // total_types)
+        
+        # The cap should be the minimum of:
+        # 1. 3x the current minimum usage
+        # 2. 1.5x the ideal distribution (to allow some variance)
+        cap_by_3x_rule = min_usage * 3
+        cap_by_ideal = int(ideal_per_type * 1.5)
+        
+        # Use the more permissive of the two, but at least min_usage + 1
+        final_cap = max(cap_by_3x_rule, cap_by_ideal, min_usage + 1)
+        
+        return final_cap
     
     def is_frequency_capped(self, type_name: str, is_entity: bool = True) -> bool:
         """Check if a type has reached its frequency cap."""
@@ -4467,38 +4479,54 @@ class BalancedTemplateManager:
         cap = self.get_frequency_cap(type_name, is_entity)
         return current_usage >= cap
     
+    def get_3x_compliant_cap(self, is_entity: bool = True) -> int:
+        """Get the current 3x compliant cap based on minimum usage."""
+        usage_dict = self.entity_type_usage if is_entity else self.relation_type_usage
+        used_counts = [count for count in usage_dict.values() if count > 0]
+        
+        if not used_counts:
+            return 3
+        
+        min_usage = min(used_counts)
+        return min_usage * 3
+    
     def get_distribution_gap_score(self, type_name: str, is_entity: bool = True) -> float:
         """Calculate how underrepresented a type is (higher score = more underrepresented)."""
         current_usage = (self.entity_type_usage if is_entity else self.relation_type_usage).get(type_name, 0)
-        total_types = self.total_entities if is_entity else self.total_relations
+        usage_dict = self.entity_type_usage if is_entity else self.relation_type_usage
         
-        if self.target_records == 0:
-            return 1.0
+        # Get current distribution statistics
+        used_counts = [count for count in usage_dict.values() if count > 0]
+        if not used_counts:
+            return 1000.0 if current_usage == 0 else 100.0
         
-        # Ideal usage would be roughly target_records / total_types
-        ideal_usage = max(1, self.target_records // total_types)
+        min_usage = min(used_counts)
+        max_usage = max(used_counts)
+        avg_usage = sum(used_counts) / len(used_counts)
         
-        # Calculate what percentage of ideal this type has
-        if ideal_usage == 0:
-            usage_ratio = float('inf') if current_usage > 0 else 1.0
+        # During balanced phase, prioritize based on 3x rule compliance
+        if self.generation_phase == "balanced":
+            # If this type is at or near the minimum, give it very high priority
+            if current_usage <= min_usage:
+                return 10000.0  # Highest priority for minimum usage types
+            elif current_usage <= min_usage + 1:
+                return 5000.0   # High priority for near-minimum
+            elif current_usage < avg_usage * 0.7:
+                return 1000.0   # Medium-high priority for below average
+            elif current_usage < avg_usage:
+                return 500.0    # Medium priority for slightly below average
+            elif current_usage <= avg_usage * 1.3:
+                return 100.0    # Low priority for around average
+            else:
+                return 1.0      # Very low priority for above average
         else:
-            usage_ratio = current_usage / ideal_usage
-        
-        # Score based on how far from ideal (prioritize underrepresented types)
-        if current_usage == 0:
-            return 1000.0  # Highest priority for uncovered types
-        elif usage_ratio < 0.3:
-            return 100.0   # Very high priority for severely underrepresented
-        elif usage_ratio < 0.6:
-            return 50.0    # High priority for underrepresented
-        elif usage_ratio < 1.0:
-            return 20.0    # Medium priority for somewhat underrepresented
-        elif usage_ratio < 1.5:
-            return 5.0     # Low priority for adequately represented
-        elif usage_ratio < 2.0:
-            return 1.0     # Very low priority for slightly overrepresented
-        else:
-            return 0.1     # Almost no priority for significantly overrepresented
+            # Coverage phase - simpler scoring
+            if current_usage == 0:
+                return 1000.0  # Highest priority for uncovered types
+            elif current_usage < 3:
+                return 100.0   # High priority for low coverage
+            else:
+                return 10.0    # Lower priority for covered types
     
     def get_uncovered_types(self) -> tuple:
         """Get lists of entity and relation types that have never been used (0 coverage)."""
@@ -4655,7 +4683,7 @@ class BalancedTemplateManager:
         }
     
     def select_next_template(self, perspective: str = None) -> object:
-        """Enhanced template selection with strict frequency capping and underrepresented type prioritization."""
+        """Enhanced template selection with intelligent frequency capping and balanced scoring."""
         if perspective == "first_person":
             templates = self.first_person_templates
         elif perspective == "third_person":
@@ -4666,10 +4694,10 @@ class BalancedTemplateManager:
         # Get currently underrepresented types
         underrep_entities, underrep_relations = self.get_underrepresented_types()
         
-        # Calculate need scores for each template
+        # Calculate scores for each template
         template_scores = {}
-        templates_with_capped_types = 0
         templates_with_needed_types = 0
+        templates_mostly_capped = 0
         
         for template_class in templates:
             try:
@@ -4678,96 +4706,89 @@ class BalancedTemplateManager:
                 _, entities_meta, relations_meta = template.generate()
                 
                 score = 0
-                has_capped_types = False
-                has_needed_types = False
+                capped_types = 0
+                needed_types = 0
+                total_types = 0
                 
-                # Check for frequency-capped entity types
+                # Analyze entity types in this template
                 for _, (entity_type, _) in entities_meta.items():
+                    total_types += 1
                     if self.is_frequency_capped(entity_type, is_entity=True):
-                        has_capped_types = True
-                        break
-                
-                # Check for frequency-capped relation types
-                if not has_capped_types:
-                    for rel_type, _, _ in relations_meta:
-                        if self.is_frequency_capped(rel_type, is_entity=False):
-                            has_capped_types = True
-                            break
-                
-                # Check if template produces needed types
-                for _, (entity_type, _) in entities_meta.items():
-                    if entity_type in underrep_entities:
-                        has_needed_types = True
-                        break
-                
-                if not has_needed_types:
-                    for rel_type, _, _ in relations_meta:
-                        if rel_type in underrep_relations:
-                            has_needed_types = True
-                            break
-                
-                # Scoring logic
-                if has_capped_types:
-                    templates_with_capped_types += 1
-                    if self.generation_phase == "balanced":
-                        score = 0.00001  # Extremely low score for capped types
+                        capped_types += 1
+                        score -= 50  # Penalty for capped types
+                    elif entity_type in underrep_entities:
+                        needed_types += 1
+                        score += 200  # High bonus for needed types
                     else:
-                        score = 0.01  # Very low score during coverage phase
-                elif has_needed_types:
-                    templates_with_needed_types += 1
-                    # Very high score for templates that produce needed types
-                    score = 10000
-                    
-                    # Additional scoring based on how much the types are needed
-                    for _, (entity_type, _) in entities_meta.items():
-                        if entity_type in underrep_entities:
-                            gap_score = self.get_distribution_gap_score(entity_type, is_entity=True)
-                            score += gap_score * 10  # Amplify the gap score
-                    
-                    for rel_type, _, _ in relations_meta:
-                        if rel_type in underrep_relations:
-                            gap_score = self.get_distribution_gap_score(rel_type, is_entity=False)
-                            score += gap_score * 10  # Amplify the gap score
-                else:
-                    # Standard scoring for templates that don't produce capped or specifically needed types
-                    for _, (entity_type, _) in entities_meta.items():
+                        # Regular scoring based on distribution gap
                         gap_score = self.get_distribution_gap_score(entity_type, is_entity=True)
                         score += gap_score
-                    
-                    for rel_type, _, _ in relations_meta:
+                
+                # Analyze relation types in this template
+                for rel_type, _, _ in relations_meta:
+                    total_types += 1
+                    if self.is_frequency_capped(rel_type, is_entity=False):
+                        capped_types += 1
+                        score -= 50  # Penalty for capped types
+                    elif rel_type in underrep_relations:
+                        needed_types += 1
+                        score += 200  # High bonus for needed types
+                    else:
+                        # Regular scoring based on distribution gap
                         gap_score = self.get_distribution_gap_score(rel_type, is_entity=False)
                         score += gap_score
-                    
-                    # Template usage penalty
-                    template_usage = self.template_usage_counts[template_class.__name__]
-                    if template_usage > 15:
-                        score *= 0.2  # Strong penalty for heavily used templates
-                    elif template_usage > 10:
-                        score *= 0.5  # Moderate penalty
-                    elif template_usage > 5:
-                        score *= 0.7  # Light penalty
                 
-                template_scores[template_class] = score
+                # Calculate percentages
+                capped_percentage = capped_types / total_types if total_types > 0 else 0
+                needed_percentage = needed_types / total_types if total_types > 0 else 0
+                
+                # Classify template
+                if needed_types > 0:
+                    templates_with_needed_types += 1
+                
+                if capped_percentage > 0.7:  # More than 70% capped types
+                    templates_mostly_capped += 1
+                    if self.generation_phase == "balanced":
+                        score *= 0.1  # Heavy penalty for mostly-capped templates
+                
+                # Bonus for templates with good balance of needed types
+                if needed_percentage > 0.3:  # At least 30% needed types
+                    score *= 2.0
+                
+                # Template usage penalty
+                template_usage = self.template_usage_counts[template_class.__name__]
+                if template_usage > 20:
+                    score *= 0.3  # Strong penalty for heavily used templates
+                elif template_usage > 15:
+                    score *= 0.5  # Moderate penalty
+                elif template_usage > 10:
+                    score *= 0.7  # Light penalty
+                
+                template_scores[template_class] = max(score, 0.1)  # Ensure minimum score
                 
             except Exception:
                 # If template fails, give it very low score
                 template_scores[template_class] = 0.001
         
         # Debugging info for balanced phase
-        if self.generation_phase == "balanced" and len(underrep_entities) > 0:
-            print(f"   🎯 Seeking templates for {len(underrep_entities)} underrep entities, {len(underrep_relations)} underrep relations")
-            print(f"   📊 Found {templates_with_needed_types} templates with needed types, {templates_with_capped_types} with capped types")
+        if self.generation_phase == "balanced" and (len(underrep_entities) > 0 or len(underrep_relations) > 0):
+            total_templates = len(templates)
+            print(f"   🎯 Template analysis: {templates_with_needed_types}/{total_templates} with needed types, {templates_mostly_capped}/{total_templates} mostly capped")
         
         # Select template with highest score
         if template_scores:
             max_score = max(template_scores.values())
-            if max_score < 0.001:
-                # All templates have very low scores, fall back to least used
+            
+            # If all scores are very low, we might need to relax our constraints
+            if max_score < 1.0 and self.generation_phase == "balanced":
+                # Emergency fallback: just avoid the most heavily capped types
                 return self.get_least_used_template(perspective)
             
-            best_template = max(template_scores.keys(), key=lambda t: template_scores[t])
-            return best_template
+            # Get all templates with the maximum score (for randomness when tied)
+            best_templates = [t for t, s in template_scores.items() if s == max_score]
+            return random.choice(best_templates)
         else:
+            # Fallback to least used
             return self.get_least_used_template(perspective)
 
     def get_balance_score(self) -> float:
