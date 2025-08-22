@@ -5092,6 +5092,13 @@ class BalancedTemplateManager:
         
         print(f"🔍 Templates available: {len(templates)}")
         
+        # INTELLIGENT RARITY-BASED SELECTION: After initial coverage, heavily weight templates with rare types
+        if self._has_basic_coverage():
+            rarity_weighted_template = self._select_rarity_weighted_template(templates, perspective)
+            if rarity_weighted_template:
+                print(f"🎯 RARITY-WEIGHTED SELECTION: Using template optimized for rare types")
+                return rarity_weighted_template
+        
         # QUOTA ENFORCEMENT: Filter out templates that would violate strict balance quotas
         quota_compliant_templates = []
         quota_violations = 0
@@ -5257,6 +5264,148 @@ class BalancedTemplateManager:
         else:
             return self.get_least_used_template(perspective)
     
+    def _has_basic_coverage(self) -> bool:
+        """Check if we have basic coverage to start using radical balance enforcement."""
+        # Start aggressive rebalancing very early - as soon as we have ANY coverage of most types
+        covered_entities = len([et for et, count in self.entity_type_usage.items() if count > 0])
+        covered_relations = len([rt for rt, count in self.relation_type_usage.items() if count > 0])
+        
+        entity_coverage_percent = covered_entities / self.total_entities
+        relation_coverage_percent = covered_relations / self.total_relations
+        
+        # Start rarity weighting when we have just 25%+ coverage to be very aggressive
+        return entity_coverage_percent >= 0.25 and relation_coverage_percent >= 0.25
+    
+    def _select_rarity_weighted_template(self, templates, perspective):
+        """Select template using RADICAL rarity-weighted scoring with frequency capping to achieve 67%+ balance."""
+        try:
+            print(f"    🎯 RADICAL RARITY-WEIGHTED SELECTION: Targeting 67%+ balance")
+            
+            # Calculate rarity scores for all types
+            entity_rarity_scores = self._calculate_type_rarity_scores(True)  # True for entities
+            relation_rarity_scores = self._calculate_type_rarity_scores(False)  # False for relations
+            
+            # Calculate template frequency caps to prevent overuse of common templates
+            max_template_usage = self._calculate_template_frequency_caps()
+            
+            best_templates = []
+            best_score = -1
+            capped_templates = 0
+            
+            for template_class in templates:
+                try:
+                    # Skip templates that violate quotas
+                    if not self.can_use_template(template_class, perspective):
+                        continue
+                    
+                    # FREQUENCY CAPPING: Skip templates that have been overused
+                    template_name = template_class.__name__
+                    current_usage = self.template_usage_counts.get(template_name, 0)
+                    if current_usage >= max_template_usage:
+                        capped_templates += 1
+                        continue
+                    
+                    template = template_class(0, datetime.now(), perspective or "first_person")
+                    _, entities_meta, relations_meta = template.generate()
+                    
+                    # Calculate RADICAL rarity-weighted score
+                    rarity_score = 0
+                    ultra_rare_types = 0
+                    common_types = 0
+                    
+                    # ASTRONOMICAL bonuses for rare entity types
+                    for _, (entity_type, _) in entities_meta.items():
+                        rarity = entity_rarity_scores.get(entity_type, 0)
+                        
+                        if rarity <= 10:  # Ultra-rare types (10 or fewer occurrences)
+                            # ASTRONOMICAL bonuses for ultra-rare types
+                            bonus = 100000000 // (rarity + 1)  # 100M divided by rarity
+                            rarity_score += bonus
+                            ultra_rare_types += 1
+                        elif rarity <= 20:  # Rare types
+                            bonus = 10000000 // (rarity + 1)  # 10M divided by rarity
+                            rarity_score += bonus
+                        elif rarity >= 100:  # Very common types - penalty
+                            penalty = rarity * 100000  # Large penalty for common types
+                            rarity_score -= penalty
+                            common_types += 1
+                    
+                    # ASTRONOMICAL bonuses for rare relation types
+                    for rel_type, _, _ in relations_meta:
+                        rarity = relation_rarity_scores.get(rel_type, 0)
+                        
+                        if rarity <= 5:  # Ultra-rare types (5 or fewer occurrences)
+                            # ASTRONOMICAL bonuses for ultra-rare types
+                            bonus = 100000000 // (rarity + 1)  # 100M divided by rarity
+                            rarity_score += bonus
+                            ultra_rare_types += 1
+                        elif rarity <= 15:  # Rare types
+                            bonus = 10000000 // (rarity + 1)  # 10M divided by rarity
+                            rarity_score += bonus
+                        elif rarity >= 50:  # Very common types - penalty
+                            penalty = rarity * 100000  # Large penalty for common types
+                            rarity_score -= penalty
+                            common_types += 1
+                    
+                    # MASSIVE bonus multiplier for templates with multiple ultra-rare types
+                    if ultra_rare_types >= 2:
+                        rarity_score *= ultra_rare_types  # Multiply by number of ultra-rare types
+                    
+                    # Heavy penalty for templates with many common types
+                    if common_types > ultra_rare_types:
+                        rarity_score -= common_types * 50000000  # 50M penalty per excess common type
+                    
+                    if rarity_score > best_score:
+                        best_score = rarity_score
+                        best_templates = [template_class]
+                    elif rarity_score == best_score and rarity_score > 0:
+                        best_templates.append(template_class)
+                
+                except Exception as e:
+                    continue
+            
+            print(f"    🛡️ FREQUENCY CAPPING: Blocked {capped_templates} overused templates")
+            
+            if best_templates and best_score > 10000000:  # Only use if VERY beneficial (10M+ score)
+                selected = random.choice(best_templates)
+                print(f"    ✅ RADICAL RARITY-WEIGHTED: Selected {selected.__name__} (rarity_score: {best_score})")
+                return selected
+            else:
+                print(f"    ❌ RADICAL RARITY-WEIGHTED: No significantly beneficial templates found (best: {best_score})")
+                return None
+                
+        except Exception as e:
+            print(f"    ❌ Radical rarity-weighted selection failed: {e}")
+            return None
+    
+    def _calculate_template_frequency_caps(self) -> int:
+        """Calculate maximum usage for any single template to enforce balance."""
+        if self.target_records == 0:
+            return float('inf')
+        
+        # For 67%+ balance, severely limit template reuse
+        total_templates = len(self.all_templates)
+        
+        # Calculate strict frequency cap: each template should be used roughly equally
+        # But allow some variance for generation feasibility
+        base_cap = max(1, self.target_records // total_templates)  # ~7-8 for 1000 records, 130 templates
+        
+        # For radical balance, use very strict caps
+        strict_cap = max(1, int(base_cap * 1.5))  # Allow 50% variance maximum
+        
+        print(f"    🔒 TEMPLATE FREQUENCY CAP: {strict_cap} uses per template (base: {base_cap})")
+        return strict_cap
+    
+    def _calculate_type_rarity_scores(self, is_entity: bool) -> Dict[str, int]:
+        """Calculate rarity scores for entity or relation types (lower usage = higher rarity)."""
+        if is_entity:
+            usage_counts = self.entity_type_usage
+        else:
+            usage_counts = self.relation_type_usage
+        
+        # Return current usage counts (lower = more rare)
+        return {type_name: count for type_name, count in usage_counts.items()}
+
     def _select_template_for_missing_types(self, templates, missing_entities, missing_relations, perspective):
         """ABSOLUTE PRIORITY selection for completely missing entity or relation types."""
         print(f"    🔍 Checking {len(templates)} templates for missing types")
