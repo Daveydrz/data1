@@ -4438,28 +4438,40 @@ class BalancedTemplateManager:
         self.generation_phase = phase
     
     def get_frequency_cap(self, type_name: str, is_entity: bool = True) -> int:
-        """Calculate strict frequency cap based on target equal distribution."""
+        """Calculate frequency cap based on 3x rule and dataset size."""
         if self.target_records == 0:
             return float('inf')  # No cap if target not set
         
-        # Calculate strict equal distribution targets
-        if is_entity:
-            current_usage = self.entity_type_usage.get(type_name, 0)
-            # For 1000 records and 68 entities: ~14.7 per type
-            target_per_type = self.target_records // self.total_entities
-            max_per_type = target_per_type + 8  # Allow small variance (e.g., 22 max for entities)
-        else:
-            current_usage = self.relation_type_usage.get(type_name, 0)
-            # For 1000 records and 104 relations: ~9.6 per type  
-            target_per_type = self.target_records // self.total_relations
-            max_per_type = target_per_type + 5  # Allow small variance (e.g., 14 max for relations)
-        
+        # During coverage phase, allow more freedom but not unlimited
         if self.generation_phase == "coverage":
-            # During coverage phase, allow more but not unlimited
-            return max_per_type + 5
-        else:
-            # During balanced phase, enforce strict caps
-            return max_per_type
+            # For coverage phase, use simple per-type target
+            total_types = self.total_entities if is_entity else self.total_relations
+            base_target = max(1, self.target_records // total_types)
+            return base_target + 3  # Allow some variance during coverage
+        
+        # During balanced phase, enforce balanced 3x rule
+        usage_dict = self.entity_type_usage if is_entity else self.relation_type_usage
+        used_counts = [count for count in usage_dict.values() if count > 0]
+        
+        if not used_counts:
+            return 5  # Initial cap if no usage yet
+        
+        min_usage = min(used_counts)
+        
+        # Calculate ideal target per type based on remaining records
+        total_types = self.total_entities if is_entity else self.total_relations
+        ideal_per_type = max(1, self.target_records // total_types)
+        
+        # The cap should be the minimum of:
+        # 1. 3x the current minimum usage
+        # 2. 1.5x the ideal distribution (to allow some variance)
+        cap_by_3x_rule = min_usage * 3
+        cap_by_ideal = int(ideal_per_type * 1.5)
+        
+        # Use the more permissive of the two, but at least min_usage + 1
+        final_cap = max(cap_by_3x_rule, cap_by_ideal, min_usage + 1)
+        
+        return final_cap
     
     def is_frequency_capped(self, type_name: str, is_entity: bool = True) -> bool:
         """Check if a type has reached its frequency cap."""
@@ -4467,38 +4479,71 @@ class BalancedTemplateManager:
         cap = self.get_frequency_cap(type_name, is_entity)
         return current_usage >= cap
     
+    def get_3x_compliant_cap(self, is_entity: bool = True) -> int:
+        """Get the current 3x compliant cap based on minimum usage."""
+        usage_dict = self.entity_type_usage if is_entity else self.relation_type_usage
+        used_counts = [count for count in usage_dict.values() if count > 0]
+        
+        if not used_counts:
+            return 3
+        
+        min_usage = min(used_counts)
+        return min_usage * 3
+    
     def get_distribution_gap_score(self, type_name: str, is_entity: bool = True) -> float:
         """Calculate how underrepresented a type is (higher score = more underrepresented)."""
         current_usage = (self.entity_type_usage if is_entity else self.relation_type_usage).get(type_name, 0)
-        total_types = self.total_entities if is_entity else self.total_relations
+        usage_dict = self.entity_type_usage if is_entity else self.relation_type_usage
         
-        if self.target_records == 0:
-            return 1.0
+        # Get current distribution statistics
+        used_counts = [count for count in usage_dict.values() if count > 0]
+        if not used_counts:
+            return 1000.0 if current_usage == 0 else 100.0
         
-        # Ideal usage would be roughly target_records / total_types
-        ideal_usage = max(1, self.target_records // total_types)
+        min_usage = min(used_counts)
+        max_usage = max(used_counts)
+        avg_usage = sum(used_counts) / len(used_counts)
         
-        # Calculate what percentage of ideal this type has
-        if ideal_usage == 0:
-            usage_ratio = float('inf') if current_usage > 0 else 1.0
+        # During balanced phase, prioritize based on 3x rule compliance
+        if self.generation_phase == "balanced":
+            # If this type is at or near the minimum, give it very high priority
+            if current_usage <= min_usage:
+                return 10000.0  # Highest priority for minimum usage types
+            elif current_usage <= min_usage + 1:
+                return 5000.0   # High priority for near-minimum
+            elif current_usage < avg_usage * 0.7:
+                return 1000.0   # Medium-high priority for below average
+            elif current_usage < avg_usage:
+                return 500.0    # Medium priority for slightly below average
+            elif current_usage <= avg_usage * 1.3:
+                return 100.0    # Low priority for around average
+            else:
+                return 1.0      # Very low priority for above average
         else:
-            usage_ratio = current_usage / ideal_usage
+            # Coverage phase - simpler scoring
+            if current_usage == 0:
+                return 1000.0  # Highest priority for uncovered types
+            elif current_usage < 3:
+                return 100.0   # High priority for low coverage
+            else:
+                return 10.0    # Lower priority for covered types
+    
+    def get_uncovered_types(self) -> tuple:
+        """Get lists of entity and relation types that have never been used (0 coverage)."""
+        uncovered_entities = []
+        uncovered_relations = []
         
-        # Score based on how far from ideal (prioritize underrepresented types)
-        if current_usage == 0:
-            return 1000.0  # Highest priority for uncovered types
-        elif usage_ratio < 0.3:
-            return 100.0   # Very high priority for severely underrepresented
-        elif usage_ratio < 0.6:
-            return 50.0    # High priority for underrepresented
-        elif usage_ratio < 1.0:
-            return 20.0    # Medium priority for somewhat underrepresented
-        elif usage_ratio < 1.5:
-            return 5.0     # Low priority for adequately represented
-        elif usage_ratio < 2.0:
-            return 1.0     # Very low priority for slightly overrepresented
-        else:
-            return 0.1     # Almost no priority for significantly overrepresented
+        # Find entity types with 0 usage
+        for entity_type, count in self.entity_type_usage.items():
+            if count == 0:
+                uncovered_entities.append(entity_type)
+        
+        # Find relation types with 0 usage
+        for relation_type, count in self.relation_type_usage.items():
+            if count == 0:
+                uncovered_relations.append(relation_type)
+        
+        return uncovered_entities, uncovered_relations
     
     def get_underrepresented_types(self) -> tuple:
         """Get lists of entity and relation types that need more representation."""
@@ -4522,6 +4567,88 @@ class BalancedTemplateManager:
                 underrep_relations.append(relation_type)
         
         return underrep_entities, underrep_relations
+    
+    def has_complete_coverage(self) -> bool:
+        """Check if we have achieved 100% coverage of all entity and relation types."""
+        uncovered_entities, uncovered_relations = self.get_uncovered_types()
+        return len(uncovered_entities) == 0 and len(uncovered_relations) == 0
+    
+    def get_coverage_stats(self) -> Dict[str, float]:
+        """Get comprehensive coverage statistics."""
+        uncovered_entities, uncovered_relations = self.get_uncovered_types()
+        
+        entity_coverage = ((self.total_entities - len(uncovered_entities)) / self.total_entities) * 100
+        relation_coverage = ((self.total_relations - len(uncovered_relations)) / self.total_relations) * 100
+        
+        # Balance score based on distribution evenness
+        balance_scores = self.calculate_entity_relation_balance()
+        
+        return {
+            "entity_coverage_percent": entity_coverage,
+            "relation_coverage_percent": relation_coverage,
+            "balance_score": balance_scores["overall_balance"],
+            "entity_balance": balance_scores["entity_balance"],
+            "relation_balance": balance_scores["relation_balance"],
+            "uncovered_entities": len(uncovered_entities),
+            "uncovered_relations": len(uncovered_relations),
+            "total_entities": self.total_entities,
+            "total_relations": self.total_relations
+        }
+    
+    def select_template_for_coverage_gaps(self, perspective: str = None) -> object:
+        """Select template specifically to fill coverage gaps (uncovered types)."""
+        if perspective == "first_person":
+            templates = self.first_person_templates
+        elif perspective == "third_person":
+            templates = self.third_person_templates
+        else:
+            templates = self.all_templates
+        
+        uncovered_entities, uncovered_relations = self.get_uncovered_types()
+        
+        # If we have complete coverage, fall back to regular selection
+        if len(uncovered_entities) == 0 and len(uncovered_relations) == 0:
+            return self.select_next_template(perspective)
+        
+        # Find templates that cover the most uncovered types
+        best_templates = []
+        best_score = 0
+        
+        for template_class in templates:
+            try:
+                # Test generate to see what this template covers
+                template = template_class(0, datetime.now(), perspective or "first_person")
+                _, entities_meta, relations_meta = template.generate()
+                
+                coverage_score = 0
+                
+                # Score based on uncovered entity types this template provides
+                for _, (entity_type, _) in entities_meta.items():
+                    if entity_type in uncovered_entities:
+                        coverage_score += 100  # High score for covering uncovered entities
+                
+                # Score based on uncovered relation types this template provides
+                for rel_type, _, _ in relations_meta:
+                    if rel_type in uncovered_relations:
+                        coverage_score += 100  # High score for covering uncovered relations
+                
+                # Track best templates
+                if coverage_score > best_score:
+                    best_score = coverage_score
+                    best_templates = [template_class]
+                elif coverage_score == best_score and coverage_score > 0:
+                    best_templates.append(template_class)
+                    
+            except Exception:
+                # Skip templates that fail
+                continue
+        
+        # Return best template for coverage, or fall back to regular selection
+        if best_templates:
+            return random.choice(best_templates)
+        else:
+            # No template specifically helps with coverage gaps, use regular selection
+            return self.select_next_template(perspective)
     
     def calculate_entity_relation_balance(self) -> Dict[str, float]:
         """Calculate separate balance scores for entities and relations."""
@@ -4556,7 +4683,7 @@ class BalancedTemplateManager:
         }
     
     def select_next_template(self, perspective: str = None) -> object:
-        """Enhanced template selection with strict frequency capping and underrepresented type prioritization."""
+        """Enhanced template selection with intelligent frequency capping and balanced scoring."""
         if perspective == "first_person":
             templates = self.first_person_templates
         elif perspective == "third_person":
@@ -4567,10 +4694,10 @@ class BalancedTemplateManager:
         # Get currently underrepresented types
         underrep_entities, underrep_relations = self.get_underrepresented_types()
         
-        # Calculate need scores for each template
+        # Calculate scores for each template
         template_scores = {}
-        templates_with_capped_types = 0
         templates_with_needed_types = 0
+        templates_mostly_capped = 0
         
         for template_class in templates:
             try:
@@ -4579,96 +4706,89 @@ class BalancedTemplateManager:
                 _, entities_meta, relations_meta = template.generate()
                 
                 score = 0
-                has_capped_types = False
-                has_needed_types = False
+                capped_types = 0
+                needed_types = 0
+                total_types = 0
                 
-                # Check for frequency-capped entity types
+                # Analyze entity types in this template
                 for _, (entity_type, _) in entities_meta.items():
+                    total_types += 1
                     if self.is_frequency_capped(entity_type, is_entity=True):
-                        has_capped_types = True
-                        break
-                
-                # Check for frequency-capped relation types
-                if not has_capped_types:
-                    for rel_type, _, _ in relations_meta:
-                        if self.is_frequency_capped(rel_type, is_entity=False):
-                            has_capped_types = True
-                            break
-                
-                # Check if template produces needed types
-                for _, (entity_type, _) in entities_meta.items():
-                    if entity_type in underrep_entities:
-                        has_needed_types = True
-                        break
-                
-                if not has_needed_types:
-                    for rel_type, _, _ in relations_meta:
-                        if rel_type in underrep_relations:
-                            has_needed_types = True
-                            break
-                
-                # Scoring logic
-                if has_capped_types:
-                    templates_with_capped_types += 1
-                    if self.generation_phase == "balanced":
-                        score = 0.00001  # Extremely low score for capped types
+                        capped_types += 1
+                        score -= 50  # Penalty for capped types
+                    elif entity_type in underrep_entities:
+                        needed_types += 1
+                        score += 200  # High bonus for needed types
                     else:
-                        score = 0.01  # Very low score during coverage phase
-                elif has_needed_types:
-                    templates_with_needed_types += 1
-                    # Very high score for templates that produce needed types
-                    score = 10000
-                    
-                    # Additional scoring based on how much the types are needed
-                    for _, (entity_type, _) in entities_meta.items():
-                        if entity_type in underrep_entities:
-                            gap_score = self.get_distribution_gap_score(entity_type, is_entity=True)
-                            score += gap_score * 10  # Amplify the gap score
-                    
-                    for rel_type, _, _ in relations_meta:
-                        if rel_type in underrep_relations:
-                            gap_score = self.get_distribution_gap_score(rel_type, is_entity=False)
-                            score += gap_score * 10  # Amplify the gap score
-                else:
-                    # Standard scoring for templates that don't produce capped or specifically needed types
-                    for _, (entity_type, _) in entities_meta.items():
+                        # Regular scoring based on distribution gap
                         gap_score = self.get_distribution_gap_score(entity_type, is_entity=True)
                         score += gap_score
-                    
-                    for rel_type, _, _ in relations_meta:
+                
+                # Analyze relation types in this template
+                for rel_type, _, _ in relations_meta:
+                    total_types += 1
+                    if self.is_frequency_capped(rel_type, is_entity=False):
+                        capped_types += 1
+                        score -= 50  # Penalty for capped types
+                    elif rel_type in underrep_relations:
+                        needed_types += 1
+                        score += 200  # High bonus for needed types
+                    else:
+                        # Regular scoring based on distribution gap
                         gap_score = self.get_distribution_gap_score(rel_type, is_entity=False)
                         score += gap_score
-                    
-                    # Template usage penalty
-                    template_usage = self.template_usage_counts[template_class.__name__]
-                    if template_usage > 15:
-                        score *= 0.2  # Strong penalty for heavily used templates
-                    elif template_usage > 10:
-                        score *= 0.5  # Moderate penalty
-                    elif template_usage > 5:
-                        score *= 0.7  # Light penalty
                 
-                template_scores[template_class] = score
+                # Calculate percentages
+                capped_percentage = capped_types / total_types if total_types > 0 else 0
+                needed_percentage = needed_types / total_types if total_types > 0 else 0
+                
+                # Classify template
+                if needed_types > 0:
+                    templates_with_needed_types += 1
+                
+                if capped_percentage > 0.7:  # More than 70% capped types
+                    templates_mostly_capped += 1
+                    if self.generation_phase == "balanced":
+                        score *= 0.1  # Heavy penalty for mostly-capped templates
+                
+                # Bonus for templates with good balance of needed types
+                if needed_percentage > 0.3:  # At least 30% needed types
+                    score *= 2.0
+                
+                # Template usage penalty
+                template_usage = self.template_usage_counts[template_class.__name__]
+                if template_usage > 20:
+                    score *= 0.3  # Strong penalty for heavily used templates
+                elif template_usage > 15:
+                    score *= 0.5  # Moderate penalty
+                elif template_usage > 10:
+                    score *= 0.7  # Light penalty
+                
+                template_scores[template_class] = max(score, 0.1)  # Ensure minimum score
                 
             except Exception:
                 # If template fails, give it very low score
                 template_scores[template_class] = 0.001
         
         # Debugging info for balanced phase
-        if self.generation_phase == "balanced" and len(underrep_entities) > 0:
-            print(f"   🎯 Seeking templates for {len(underrep_entities)} underrep entities, {len(underrep_relations)} underrep relations")
-            print(f"   📊 Found {templates_with_needed_types} templates with needed types, {templates_with_capped_types} with capped types")
+        if self.generation_phase == "balanced" and (len(underrep_entities) > 0 or len(underrep_relations) > 0):
+            total_templates = len(templates)
+            print(f"   🎯 Template analysis: {templates_with_needed_types}/{total_templates} with needed types, {templates_mostly_capped}/{total_templates} mostly capped")
         
         # Select template with highest score
         if template_scores:
             max_score = max(template_scores.values())
-            if max_score < 0.001:
-                # All templates have very low scores, fall back to least used
+            
+            # If all scores are very low, we might need to relax our constraints
+            if max_score < 1.0 and self.generation_phase == "balanced":
+                # Emergency fallback: just avoid the most heavily capped types
                 return self.get_least_used_template(perspective)
             
-            best_template = max(template_scores.keys(), key=lambda t: template_scores[t])
-            return best_template
+            # Get all templates with the maximum score (for randomness when tied)
+            best_templates = [t for t, s in template_scores.items() if s == max_score]
+            return random.choice(best_templates)
         else:
+            # Fallback to least used
             return self.get_least_used_template(perspective)
 
     def get_balance_score(self) -> float:
@@ -4701,23 +4821,7 @@ class BalancedTemplateManager:
         
         return balance_score
     
-    def get_coverage_stats(self) -> Dict:
-        """Get detailed coverage statistics."""
-        all_entity_types = {attr for attr in dir(EntityTypes) if not attr.startswith('_')}
-        all_relation_types = {attr for attr in dir(RelationTypes) if not attr.startswith('_')}
-        
-        entity_coverage = len(self.covered_entities) / len(all_entity_types) * 100
-        relation_coverage = len(self.covered_relations) / len(all_relation_types) * 100
-        
-        return {
-            "entity_coverage_percent": entity_coverage,
-            "relation_coverage_percent": relation_coverage,
-            "covered_entities": len(self.covered_entities),
-            "total_entities": len(all_entity_types),
-            "covered_relations": len(self.covered_relations),
-            "total_relations": len(all_relation_types),
-            "balance_score": self.get_balance_score()
-        }
+
     
     def get_usage_distribution(self) -> Dict:
         """Get usage distribution for templates, entities, and relations."""
@@ -4728,15 +4832,15 @@ class BalancedTemplateManager:
         }
 
 def generate_balanced_dataset(num_records: int = None) -> Dict:
-    """Generate perfectly balanced dataset with enhanced tracking and two-phase algorithm."""
+    """Generate perfectly balanced dataset with enhanced tracking and three-phase algorithm."""
     
     if num_records is None:
         num_records = Config.DEFAULT_NUM_RECORDS
     
-    print(f"🚀 ENHANCED BALANCED DATASET GENERATION")
+    print(f"🚀 COVERAGE-FIRST BALANCED DATASET GENERATION")
     print(f"============================================================")
     print(f"🎯 Target: {num_records} perfectly balanced records")
-    print(f"📊 Two-phase algorithm: Coverage Guarantee + Balanced Distribution")
+    print(f"📊 Three-phase algorithm: Mandatory Coverage → Balanced Distribution → Quality Optimization")
     
     dataset = []
     base_date = datetime.strptime(Config.CURRENT_UTC_DATETIME, "%Y-%m-%d %H:%M:%S")
@@ -4872,28 +4976,33 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
     print(f"   - Third-person records: {third_person_target} ({Config.THIRD_PERSON_RATIO:.0%})")
     print(f"   - Templates per perspective: {len(first_person_templates)} + {len(third_person_templates)}")
     
-    # PHASE 1: Coverage Guarantee Phase
-    print(f"\n🎯 PHASE 1: Coverage Guarantee Phase")
-    coverage_phase_target = min(1000, num_records // 10)  # 10% for coverage guarantee
+    # PHASE 1: Mandatory Coverage Phase (100% Coverage Guarantee)
+    print(f"\n🎯 PHASE 1: Mandatory Coverage Phase (100% Coverage Guarantee)")
+    print(f"   - Goal: Ensure every entity and relation type appears at least once")
+    print(f"   - Will not proceed to Phase 2 until 100% coverage achieved")
     
-    # Track targets for Phase 1
-    phase1_first_person_target = int(coverage_phase_target * Config.FIRST_PERSON_RATIO)
-    phase1_third_person_target = coverage_phase_target - phase1_first_person_target
-    phase1_first_person_remaining = phase1_first_person_target
-    phase1_third_person_remaining = phase1_third_person_target
+    # Track coverage progress
+    coverage_records_generated = 0
+    max_coverage_attempts = min(2000, num_records // 2)  # Allow up to 50% of records for coverage
     
-    for i in range(coverage_phase_target):
-        # Properly distribute perspectives to maintain ratio
-        if phase1_first_person_remaining > 0 and (phase1_third_person_remaining <= 0 or random.random() < Config.FIRST_PERSON_RATIO):
-            perspective = "first_person"
-            phase1_first_person_remaining -= 1
-            TemplateClass = manager.get_least_used_template("first_person")
-        else:
-            perspective = "third_person"
-            phase1_third_person_remaining -= 1
-            TemplateClass = manager.get_least_used_template("third_person")
+    while not manager.has_complete_coverage() and coverage_records_generated < max_coverage_attempts:
+        # Choose perspective to maintain rough 60/40 ratio during coverage phase
+        current_first_person = sum(1 for r in dataset if r.get('context', {}).get('Perspective') == 'first_person')
+        current_total = len(dataset)
         
-        template_instance = TemplateClass(template_id=i, base_date=base_date, perspective=perspective)
+        if current_total == 0:
+            perspective = "first_person"  # Start with first person
+        else:
+            current_ratio = current_first_person / current_total
+            # Use coverage-specific template selection to prioritize gap-filling
+            if current_ratio < Config.FIRST_PERSON_RATIO:
+                perspective = "first_person"
+            else:
+                perspective = "third_person"
+        
+        # Select template specifically for coverage gaps
+        TemplateClass = manager.select_template_for_coverage_gaps(perspective)
+        template_instance = TemplateClass(template_id=len(dataset), base_date=base_date, perspective=perspective)
         
         success = False
         for attempt in range(Config.MAX_RETRIES):
@@ -4913,6 +5022,7 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
                 manager.record_template_usage(TemplateClass, entities_meta, relations_meta)
                 
                 dataset.append(record)
+                coverage_records_generated += 1
                 success = True
                 break
                 
@@ -4924,15 +5034,36 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
                     failed_generations += 1
         
         # Progress reporting for coverage phase
-        if (i + 1) % 100 == 0 or i + 1 == coverage_phase_target:
+        if coverage_records_generated % 50 == 0 or manager.has_complete_coverage():
             coverage_stats = manager.get_coverage_stats()
-            print(f"   Coverage Phase: {i+1}/{coverage_phase_target} | "
+            uncovered_entities, uncovered_relations = manager.get_uncovered_types()
+            print(f"   Coverage Phase: {coverage_records_generated} records | "
                   f"Entities: {coverage_stats['entity_coverage_percent']:.1f}% | "
                   f"Relations: {coverage_stats['relation_coverage_percent']:.1f}% | "
-                  f"Balance: {coverage_stats['balance_score']:.1f}%")
+                  f"Missing: {len(uncovered_entities)}E + {len(uncovered_relations)}R")
+            
+            if len(uncovered_entities) > 0:
+                print(f"      Still need entities: {', '.join(sorted(uncovered_entities)[:5])}{'...' if len(uncovered_entities) > 5 else ''}")
+            if len(uncovered_relations) > 0:
+                print(f"      Still need relations: {', '.join(sorted(uncovered_relations)[:5])}{'...' if len(uncovered_relations) > 5 else ''}")
+    
+    # Check if we achieved 100% coverage
+    final_coverage_stats = manager.get_coverage_stats()
+    if manager.has_complete_coverage():
+        print(f"   ✅ 100% COVERAGE ACHIEVED! ({coverage_records_generated} records used)")
+        print(f"      - All {final_coverage_stats['total_entities']} entity types covered")
+        print(f"      - All {final_coverage_stats['total_relations']} relation types covered")
+    else:
+        uncovered_entities, uncovered_relations = manager.get_uncovered_types()
+        print(f"   ⚠️  Coverage phase completed but 100% coverage not achieved:")
+        print(f"      - Missing {len(uncovered_entities)} entity types: {', '.join(sorted(uncovered_entities)[:10])}")
+        print(f"      - Missing {len(uncovered_relations)} relation types: {', '.join(sorted(uncovered_relations)[:10])}")
+        print(f"   📊 Final coverage: {final_coverage_stats['entity_coverage_percent']:.1f}% entities, {final_coverage_stats['relation_coverage_percent']:.1f}% relations")
     
     # PHASE 2: Balanced Distribution Phase
     print(f"\n⚖️  PHASE 2: Balanced Distribution Phase")
+    print(f"   - Goal: Maintain balanced distribution while avoiding over-representation")
+    print(f"   - Max frequency cap: {3}x difference between most/least frequent types")
     
     # Switch to balanced phase with strict frequency capping
     manager.set_generation_parameters(num_records, "balanced")
@@ -5009,6 +5140,102 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
                   f"Failed: {failed_generations} | "
                   f"Success: {(current_total / num_records * 100):.1f}%")
     
+    # PHASE 3: Quality Optimization Phase
+    print(f"\n✨ PHASE 3: Quality Optimization Phase")
+    
+    remaining_for_optimization = num_records - len(dataset)
+    if remaining_for_optimization > 0:
+        print(f"   - Goal: Fill remaining {remaining_for_optimization} records with optimal balance")
+        print(f"   - Focus: Best-balanced templates and final quality checks")
+        
+        # For Phase 3, calculate remaining perspective targets
+        current_first_person = sum(1 for r in dataset if r.get('context', {}).get('Perspective') == 'first_person')
+        current_third_person = len(dataset) - current_first_person
+        
+        remaining_first_person = max(0, first_person_target - current_first_person)
+        remaining_third_person = max(0, third_person_target - current_third_person)
+        
+        print(f"   - Remaining targets: {remaining_first_person} first-person, {remaining_third_person} third-person")
+        
+        for i in range(remaining_for_optimization):
+            # Determine perspective based on remaining targets
+            if remaining_first_person > 0 and remaining_third_person > 0:
+                # Both needed - use ratio
+                ratio = remaining_first_person / (remaining_first_person + remaining_third_person)
+                perspective = "first_person" if random.random() < ratio else "third_person"
+            elif remaining_first_person > 0:
+                perspective = "first_person"
+            else:
+                perspective = "third_person"
+            
+            # Use regular balanced template selection for optimization
+            TemplateClass = manager.select_next_template(perspective)
+            template_instance = TemplateClass(template_id=len(dataset), base_date=base_date, perspective=perspective)
+            
+            success = False
+            for attempt in range(Config.MAX_RETRIES):
+                try:
+                    record = template_instance.build()
+                    
+                    # Enhanced validation with quality checks
+                    if not record.get('entities'):
+                        raise ValueError("No entities found")
+                    if not record.get('text'):
+                        raise ValueError("No text found")
+                    if len(record.get('relations', [])) == 0:
+                        raise ValueError("No relations found")
+                    
+                    # Additional quality check for natural language
+                    text = record.get('text', '')
+                    if len(text.split()) < 5:
+                        raise ValueError("Text too short for quality memory")
+                    
+                    # Get metadata for tracking
+                    _, entities_meta, relations_meta = template_instance.generate()
+                    manager.record_template_usage(TemplateClass, entities_meta, relations_meta)
+                    
+                    dataset.append(record)
+                    success = True
+                    
+                    # Update remaining counters
+                    if perspective == "first_person" and remaining_first_person > 0:
+                        remaining_first_person -= 1
+                    elif perspective == "third_person" and remaining_third_person > 0:
+                        remaining_third_person -= 1
+                    
+                    break
+                    
+                except Exception as e:
+                    error_type = type(e).__name__
+                    failure_reasons[error_type] = failure_reasons.get(error_type, 0) + 1
+                    
+                    if "Quality issues" in str(e):
+                        for issue in str(e).split("Quality issues: ")[1].strip("[]'").split("', '"):
+                            quality_issues[issue] = quality_issues.get(issue, 0) + 1
+                    
+                    if attempt == Config.MAX_RETRIES - 1:
+                        failed_generations += 1
+            
+            # Progress reporting for optimization phase
+            if (i + 1) % 100 == 0 or i + 1 == remaining_for_optimization:
+                current_total = len(dataset)
+                coverage_stats = manager.get_coverage_stats()
+                print(f"   Optimization Phase: {current_total}/{num_records} | "
+                      f"Balance: {coverage_stats['balance_score']:.1f}% | "
+                      f"Quality: ✅")
+    
+    # Final validation and reporting
+    final_coverage_stats = manager.get_coverage_stats()
+    print(f"\n🎉 GENERATION COMPLETE!")
+    print(f"   - Total records: {len(dataset)}/{num_records}")
+    print(f"   - Entity coverage: {final_coverage_stats['entity_coverage_percent']:.1f}% ({68 - final_coverage_stats['uncovered_entities']}/68)")
+    print(f"   - Relation coverage: {final_coverage_stats['relation_coverage_percent']:.1f}% ({104 - final_coverage_stats['uncovered_relations']}/104)")
+    print(f"   - Overall balance: {final_coverage_stats['balance_score']:.1f}%")
+    
+    final_first_person = sum(1 for r in dataset if r.get('context', {}).get('Perspective') == 'first_person')
+    final_third_person = len(dataset) - final_first_person
+    print(f"   - Perspective ratio: {final_first_person} first-person ({final_first_person/len(dataset)*100:.1f}%), {final_third_person} third-person ({final_third_person/len(dataset)*100:.1f}%)")
+    
     # Generate enhanced statistics
     stats = generate_balanced_statistics(dataset, failed_generations, failure_reasons, quality_issues, 
                                        len(first_person_templates) + len(third_person_templates), manager)
@@ -5017,11 +5244,12 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
         "dataset": dataset,
         "statistics": stats,
         "metadata": {
-            "generation_method": "enhanced_balanced",
+            "generation_method": "coverage_first_balanced_3_phase",
             "num_records_requested": num_records,
             "num_records_generated": len(dataset),
             "balance_manager": manager.get_usage_distribution(),
-            "coverage_stats": manager.get_coverage_stats()
+            "coverage_stats": manager.get_coverage_stats(),
+            "phases_completed": ["mandatory_coverage", "balanced_distribution", "quality_optimization"]
         }
     }
 
