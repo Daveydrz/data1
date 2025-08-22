@@ -331,21 +331,7 @@ COMMUNITY_ROLES = ["volunteer coordinator", "neighborhood watch leader", "school
 
 PERIODS = ["during childhood", "in my teens", "college years", "early career", "when I was married", "after the divorce", "during pregnancy", "when kids were young", "midlife crisis", "empty nest years", "pre-retirement", "during illness", "after recovery", "recent years", "last decade", "formative years"]
 
-# === ADD THESE DATA POOLS ===
 
-MEMORY_TYPES = ["episodic memory", "semantic memory", "procedural memory", "emotional memory", "traumatic memory", "childhood memory", "recent memory", "vivid memory", "fragmented memory", "nostalgic memory", "suppressed memory", "triggered memory", "collective memory", "false memory", "flashbulb memory"]
-
-LIFE_STAGES = ["infancy", "toddlerhood", "childhood", "adolescence", "young adulthood", "early career", "career building", "mid-career", "senior career", "pre-retirement", "early retirement", "active retirement", "later life"]
-
-CULTURAL_ELEMENTS = ["family recipes", "traditional songs", "cultural dances", "religious practices", "holiday customs", "storytelling traditions", "ancestral languages", "craft techniques", "ceremonial rituals", "folk art", "traditional games", "cultural dress", "historical narratives", "spiritual beliefs", "community celebrations"]
-
-LEARNING_METHODS = ["hands-on practice", "visual observation", "verbal instruction", "trial and error", "mentorship", "formal education", "self-study", "peer learning", "experiential learning", "repetitive practice", "guided discovery", "collaborative learning", "online courses", "workshop attendance", "reading extensively"]
-
-PERSONAL_GROWTH = ["emotional intelligence", "self-awareness", "confidence building", "resilience development", "communication skills", "leadership abilities", "empathy expansion", "stress management", "mindfulness practice", "creative expression", "problem-solving skills", "adaptability", "patience cultivation", "forgiveness capacity", "authenticity"]
-
-COMMUNITY_ROLES = ["volunteer coordinator", "neighborhood watch leader", "school board member", "youth mentor", "community organizer", "local activist", "charity fundraiser", "environmental advocate", "cultural preservationist", "elder caretaker", "child advocate", "religious leader", "social worker", "community mediator", "local historian"]
-
-PERIODS = ["during childhood", "in my teens", "college years", "early career", "when I was married", "after the divorce", "during pregnancy", "when kids were young", "midlife crisis", "empty nest years", "pre-retirement", "during illness", "after recovery", "recent years", "last decade", "formative years"]
 
 INDUSTRIES = ["technology", "healthcare", "finance", "education", "manufacturing", "retail", "entertainment", "construction", "agriculture", "transportation", "energy", "telecommunications", "hospitality", "consulting", "media"]
 
@@ -520,30 +506,6 @@ class Template:
             
         except Exception as e:
             raise Exception(f"Error in {self.__class__.__name__}: {str(e)}")
-
-def get_realistic_duration_for_transport(transport: str) -> str:
-    """Get realistic duration based on transport type."""
-    if transport in ["car", "bus", "subway", "taxi", "rideshare"]:
-        return random.choice(["30 minutes", "1 hour", "2 hours", "half a day"])
-    elif transport in ["train"]:
-        return random.choice(["2 hours", "4 hours", "half a day", "all day"])
-    elif transport in ["plane"]:
-        return random.choice(["2 hours", "4 hours", "all day"])
-    elif transport in ["bicycle", "walking", "scooter"]:
-        return random.choice(["30 minutes", "1 hour", "2 hours"])
-    else:
-        return random.choice(["30 minutes", "1 hour", "2 hours", "half a day"])
-
-def get_realistic_frequency_for_activity(activity: str) -> str:
-    """Get realistic frequency based on activity type."""
-    if "work" in activity.lower() or "managing" in activity.lower():
-        return random.choice(["daily", "weekly", "every morning", "frequently"])
-    elif "exercise" in activity.lower() or "fitness" in activity.lower():
-        return random.choice(["daily", "three times a week", "every morning", "weekly"])
-    elif "social" in activity.lower() or "networking" in activity.lower():
-        return random.choice(["weekly", "monthly", "occasionally", "every few days"])
-    else:
-        return random.choice(FREQUENCY_DETAILED)
 
 # --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
 # ENHANCED TEMPLATES USING EXPANDED RELATIONS
@@ -2383,7 +2345,18 @@ class FirstPersonMediaConsumptionTemplate(Template):
         topic = random.choice(TOPICS)
         sentiment = random.choice(SENTIMENTS)
         
-        text = f"I've been watching {media} on {platform} about {topic}. I really enjoy {genre} content and feel {sentiment} about it."
+        # Derive verb and relation based on media type
+        if media in ["movie", "TV series", "documentary", "YouTube video", "webinar"]:
+            verb = "watching"
+            rel = RelationTypes.WATCHES
+        elif media in ["book", "article", "blog post", "news report"]:
+            verb = "reading"
+            rel = RelationTypes.READS
+        else:  # podcast, audiobook, music, etc.
+            verb = "listening to"
+            rel = RelationTypes.LISTENS_TO
+            
+        text = f"I've been {verb} {media} on {platform} about {topic}. I really enjoy {genre} content and feel {sentiment} about it."
         
         entities = {
             "user": (EntityTypes.PRONOUN, "I"),
@@ -2395,11 +2368,11 @@ class FirstPersonMediaConsumptionTemplate(Template):
         }
         
         relations = [
-            (RelationTypes.WATCHES, "user", "media1"),
+            (rel, "user", "media1"),
             (RelationTypes.USES, "user", "plat1"),
-            (RelationTypes.IS_TYPE, "media1", "genre1"),
             (RelationTypes.ABOUT_TOPIC, "media1", "topic1"),
-            (RelationTypes.HAD_SENTIMENT, "user", "sent1")
+            (RelationTypes.HAS_PREFERENCE, "user", "genre1"),
+            (RelationTypes.HAD_SENTIMENT, "user", "sent1"),
         ]
         
         return text, entities, relations
@@ -4015,6 +3988,7 @@ class OwnershipAndObjectsTemplate(Template):
             (RelationTypes.OWNS, "subj", "item"),
             (RelationTypes.HAS_OBJECT, "subj", "item"),
             (RelationTypes.USED_FOR, "item", "purpose"),
+            (RelationTypes.IS_FRIENDS_WITH, "subj", "friend"),
         ]
         if borrow_flow == "borrowed":
             relations.append((RelationTypes.BORROWED, "subj", "item"))
@@ -4232,7 +4206,7 @@ class BudgetIndustryTimelineTemplate(Template):
             (RelationTypes.BUDGETS_FOR, "subj", "bud"),
             (RelationTypes.STARTS_AT, "bud", "time"),
             (RelationTypes.HAS_DEADLINE, "bud", "tl"),
-            (RelationTypes.IS_PART_OF, "ind", "tl"),
+            (RelationTypes.ABOUT_TOPIC, "tl", "ind"),
         ]
         return text, entities, relations
 
@@ -4318,7 +4292,6 @@ def generate_dataset(num_records: int = None) -> Dict:
         FirstPersonComplexMemoryTemplate,
         FirstPersonMemoryRecallTemplate,
         FirstPersonCognitiveProcessTemplate,
-        FirstPersonCompleteSensoryTemplate,
         FirstPersonTemporalRoutineTemplate,
         FirstPersonLocationExpertiseTemplate,
         FirstPersonHopesPlanningTemplate,
