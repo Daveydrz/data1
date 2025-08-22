@@ -4893,54 +4893,68 @@ class BalancedTemplateManager:
             self.covered_relations.add(rel_type)
     
     def set_generation_parameters(self, target_records: int, phase: str = "coverage"):
-        """Set generation parameters and calculate adaptive quotas for PERFECT 100% balance."""
+        """Set generation parameters and calculate adaptive quotas for optimal balance."""
         self.target_records = target_records
         self.generation_phase = phase
         
-        # PERFECT BALANCE CALCULATION: Each type should appear exactly the same number of times
-        # For 100% balance, calculate exact targets per type
-        perfect_entities_per_type = max(1, target_records // self.total_entities)  # At least 1 per type
-        perfect_relations_per_type = max(1, target_records // self.total_relations)  # At least 1 per type
+        # REALISTIC BALANCE CALCULATION: Each type should appear roughly the same number of times
+        # Calculate realistic targets with proper variance allowance for achievable balance
+        target_entities_per_type = max(1, target_records // self.total_entities)  # At least 1 per type
+        target_relations_per_type = max(1, target_records // self.total_relations)  # At least 1 per type
         
-        # For TRUE PERFECT BALANCE (100%), all quotas should converge to the same target
-        # Allow minimal variance to handle distribution challenges
-        variance_allowance = max(1, perfect_entities_per_type // 10)  # 10% variance maximum
+        # Set REALISTIC quotas that allow for good balance while being achievable
+        # For smaller datasets, allow more variance; for larger datasets, tighten constraints
+        if target_records < 500:
+            # Small datasets: focus on coverage first, then balance
+            variance_multiplier = 3.0  # Allow 3x variance for small datasets
+        elif target_records < 2000:
+            # Medium datasets: moderate balance requirements
+            variance_multiplier = 2.0  # Allow 2x variance
+        else:
+            # Large datasets: tight balance requirements
+            variance_multiplier = 1.5  # Allow 1.5x variance
         
-        # Set EXTREMELY TIGHT quotas for perfect balance
-        self.MINIMUM_QUOTA_PER_TYPE = perfect_entities_per_type
-        self.TARGET_QUOTA_PER_TYPE = perfect_entities_per_type
-        self.PERFECT_QUOTA_PER_TYPE = perfect_entities_per_type  # Exactly equal
-        self.MAXIMUM_QUOTA_PER_TYPE = perfect_entities_per_type + variance_allowance  # Minimal overage allowed
+        # Calculate progressive quotas for four-phase system
+        min_quota = max(1, int(target_entities_per_type * 0.5))  # At least 50% of target
+        target_quota = target_entities_per_type
+        perfect_quota = int(target_entities_per_type * 1.2)  # Allow 20% overage
+        max_quota = int(target_entities_per_type * variance_multiplier)  # Scale with dataset size
         
-        print(f"🎯 PERFECT BALANCE QUOTAS for {target_records} records:")
-        print(f"   - Target: EXACTLY {perfect_entities_per_type} entities per type, {perfect_relations_per_type} relations per type")
+        self.MINIMUM_QUOTA_PER_TYPE = min_quota
+        self.TARGET_QUOTA_PER_TYPE = target_quota
+        self.PERFECT_QUOTA_PER_TYPE = perfect_quota
+        self.MAXIMUM_QUOTA_PER_TYPE = max_quota
+        
+        print(f"🎯 REALISTIC BALANCE QUOTAS for {target_records} records:")
+        print(f"   - Base target: {target_entities_per_type} entities per type, {target_relations_per_type} relations per type")
         print(f"   - MIN: {self.MINIMUM_QUOTA_PER_TYPE}, TARGET: {self.TARGET_QUOTA_PER_TYPE}")
         print(f"   - PERFECT: {self.PERFECT_QUOTA_PER_TYPE}, MAX: {self.MAXIMUM_QUOTA_PER_TYPE}")
-        print(f"   - Variance allowance: ±{variance_allowance} for 100% balance")
+        print(f"   - Variance multiplier: {variance_multiplier}x for dataset size {target_records}")
     
     def get_frequency_cap(self, type_name: str, is_entity: bool = True) -> int:
-        """Calculate strict frequency cap based on target equal distribution."""
+        """Calculate realistic frequency cap based on target balanced distribution."""
         if self.target_records == 0:
             return float('inf')  # No cap if target not set
         
-        # Calculate strict equal distribution targets
+        # Calculate realistic equal distribution targets
         if is_entity:
-            current_usage = self.entity_type_usage.get(type_name, 0)
-            # For 1000 records and 68 entities: ~14.7 per type
+            # For entities: aim for roughly equal distribution with reasonable variance
             target_per_type = self.target_records // self.total_entities
-            max_per_type = target_per_type + 8  # Allow small variance (e.g., 22 max for entities)
+            max_per_type = int(target_per_type * 2.5)  # Allow 2.5x variance
         else:
-            current_usage = self.relation_type_usage.get(type_name, 0)
-            # For 1000 records and 104 relations: ~9.6 per type  
+            # For relations: aim for roughly equal distribution with reasonable variance  
             target_per_type = self.target_records // self.total_relations
-            max_per_type = target_per_type + 5  # Allow small variance (e.g., 14 max for relations)
+            max_per_type = int(target_per_type * 2.5)  # Allow 2.5x variance
+        
+        # Ensure minimum caps based on dataset size
+        min_cap = max(5, self.target_records // 50)  # At least 2% of dataset size
         
         if self.generation_phase == "coverage":
-            # During coverage phase, allow more but not unlimited
-            return max_per_type + 5
+            # During coverage phase, be more permissive to ensure all types get covered
+            return max(max_per_type + 10, min_cap)
         else:
-            # During balanced phase, enforce strict caps
-            return max_per_type
+            # During balanced phases, enforce reasonable caps but not overly restrictive
+            return max(max_per_type, min_cap)
     
     def is_frequency_capped(self, type_name: str, is_entity: bool = True) -> bool:
         """Check if a type has reached its frequency cap."""
@@ -5071,11 +5085,15 @@ class BalancedTemplateManager:
             min_entity = min([c for c in entity_counts if c > 0] + [1])
             min_relation = min([c for c in relation_counts if c > 0] + [1])
             
-            # If ratio is extreme (>100:1), force emergency balance mode
+            # Calculate ratios and trigger emergency mode more aggressively
             entity_ratio = max_entity / min_entity if min_entity > 0 else float('inf')
             relation_ratio = max_relation / min_relation if min_relation > 0 else float('inf')
             
-            if entity_ratio > 100 or relation_ratio > 100:
+            # More aggressive emergency balance trigger for better balance
+            # Trigger earlier to prevent extreme imbalances from developing
+            emergency_threshold = 15  # Trigger at 15:1 ratio instead of 100:1
+            
+            if entity_ratio > emergency_threshold or relation_ratio > emergency_threshold:
                 print(f"🚨 EMERGENCY BALANCE MODE: Entity ratio {entity_ratio:.1f}:1, Relation ratio {relation_ratio:.1f}:1")
                 return self._emergency_balance_selection(templates, perspective)
         
@@ -5125,15 +5143,23 @@ class BalancedTemplateManager:
                 score = self._score_template_for_strict_enforcement(template_class, perspective)
                 template_scores[template_class] = score
         
-        # Select template with highest score, with strict filtering
+        # Select template with highest score, with reasonable filtering
         if template_scores:
-            # Filter out templates with negative or very low scores
-            positive_scores = {t: s for t, s in template_scores.items() if s > 50}
+            # Filter out templates with very low or negative scores
+            positive_scores = {t: s for t, s in template_scores.items() if s > 0}
             
             if positive_scores:
                 max_score = max(positive_scores.values())
-                best_templates = [t for t, s in positive_scores.items() if s == max_score]
-                return random.choice(best_templates)
+                # Allow templates with scores within reasonable range of the maximum
+                score_threshold = max(max_score * 0.7, 100)  # At least 70% of max score or 100 minimum
+                good_templates = [t for t, s in positive_scores.items() if s >= score_threshold]
+                
+                if good_templates:
+                    return random.choice(good_templates)
+                else:
+                    # If no templates meet threshold, use the best available
+                    best_templates = [t for t, s in positive_scores.items() if s == max_score]
+                    return random.choice(best_templates)
             else:
                 # All templates scored poorly - use emergency selection
                 print(f"⚠️  All templates scored poorly, using emergency selection")
@@ -5207,58 +5233,123 @@ class BalancedTemplateManager:
             return self._emergency_balance_selection(templates, perspective)
     
     def _emergency_balance_selection(self, templates, perspective):
-        """Emergency selection that forces balance by finding templates that help the most underrepresented types."""
+        """Emergency selection that aggressively rebalances by finding templates that produce the most underrepresented types."""
         try:
-            # Find the most underrepresented entity and relation types
-            entity_counts = list(self.entity_type_usage.values())
-            relation_counts = list(self.relation_type_usage.values())
+            # Get all entity and relation counts, sorted by usage (lowest first)
+            entity_items = sorted(self.entity_type_usage.items(), key=lambda x: x[1])
+            relation_items = sorted(self.relation_type_usage.items(), key=lambda x: x[1])
             
-            if not entity_counts or not relation_counts:
+            if not entity_items or not relation_items:
                 return self.get_least_used_template(perspective)
             
-            # Find types with minimum counts
-            min_entity_count = min([c for c in entity_counts if c >= 0])
-            min_relation_count = min([c for c in relation_counts if c >= 0])
+            # Find the bottom 30% most underrepresented types for aggressive rebalancing
+            num_bottom_entities = max(1, int(len(entity_items) * 0.3))
+            num_bottom_relations = max(1, int(len(relation_items) * 0.3))
             
-            most_needed_entities = [et for et, count in self.entity_type_usage.items() if count == min_entity_count]
-            most_needed_relations = [rt for rt, count in self.relation_type_usage.items() if count == min_relation_count]
+            most_needed_entities = [et for et, _ in entity_items[:num_bottom_entities]]
+            most_needed_relations = [rt for rt, _ in relation_items[:num_bottom_relations]]
             
-            # Score templates based on how many desperately needed types they produce
+            # Find types that are massively overrepresented (top 20%)
+            num_top_entities = max(1, int(len(entity_items) * 0.2))
+            num_top_relations = max(1, int(len(relation_items) * 0.2))
+            
+            overrepresented_entities = [et for et, _ in entity_items[-num_top_entities:]]
+            overrepresented_relations = [rt for rt, _ in relation_items[-num_top_relations:]]
+            
+            print(f"    🎯 Emergency rebalancing - targeting {len(most_needed_entities)} entities, {len(most_needed_relations)} relations")
+            print(f"    📈 Most needed entities: {most_needed_entities[:5]}")
+            print(f"    📈 Most needed relations: {most_needed_relations[:5]}")
+            print(f"    📉 Avoiding entities: {overrepresented_entities[:5]}")
+            print(f"    📉 Avoiding relations: {overrepresented_relations[:5]}")
+            
+            # Score templates based on balance impact with MUCH MORE AGGRESSIVE REBALANCING
             best_templates = []
-            best_score = -1
+            best_score = -1000000
             
             for template_class in templates:
                 try:
                     template = template_class(0, datetime.now(), perspective or "first_person")
                     _, entities_meta, relations_meta = template.generate()
                     
-                    score = 0
+                    score = 10000  # Start with high positive base score for emergency mode
+                    needed_bonus = 0
+                    overrep_penalty = 0
                     
-                    # Count how many desperately needed entities this template produces
+                    # MASSIVE bonus for producing desperately needed types
                     for _, (entity_type, _) in entities_meta.items():
                         if entity_type in most_needed_entities:
-                            score += 1000
+                            # Get exact usage count for targeted bonuses
+                            current_usage = self.entity_type_usage.get(entity_type, 0)
+                            # Give massive bonus inversely proportional to current usage
+                            bonus = 50000 // max(1, current_usage)  # More bonus for lower usage
+                            score += bonus
+                            needed_bonus += bonus
+                        elif entity_type in overrepresented_entities:
+                            # Much smaller penalty for overrepresented types in emergency mode
+                            current_usage = self.entity_type_usage.get(entity_type, 0)
+                            penalty = min(5000, current_usage * 10)  # Cap penalty to allow progress
+                            score -= penalty
+                            overrep_penalty += penalty
+                        else:
+                            # Small bonus for all other types to encourage generation
+                            score += 100
                     
-                    # Count how many desperately needed relations this template produces
+                    # MASSIVE bonus for producing desperately needed relations
                     for rel_type, _, _ in relations_meta:
                         if rel_type in most_needed_relations:
-                            score += 1000
+                            # Get exact usage count for targeted bonuses
+                            current_usage = self.relation_type_usage.get(rel_type, 0)
+                            # Give massive bonus inversely proportional to current usage
+                            bonus = 50000 // max(1, current_usage)  # More bonus for lower usage
+                            score += bonus
+                            needed_bonus += bonus
+                        elif rel_type in overrepresented_relations:
+                            # Much smaller penalty for overrepresented types in emergency mode
+                            current_usage = self.relation_type_usage.get(rel_type, 0)
+                            penalty = min(5000, current_usage * 10)  # Cap penalty to allow progress
+                            score -= penalty
+                            overrep_penalty += penalty
+                        else:
+                            # Small bonus for all other types to encourage generation
+                            score += 100
+                    
+                    # Template usage balancing - encourage template diversity
+                    template_usage = self.template_usage_counts[template_class.__name__]
+                    avg_usage = self.target_records // len(self.all_templates) if self.all_templates else 1
+                    
+                    if template_usage < avg_usage:
+                        score += 2000  # Good bonus for underused templates
+                    elif template_usage > avg_usage * 2:
+                        score -= 1000  # Moderate penalty for overused templates
+                    
+                    # Boost score if template provides net benefit (more help than harm)
+                    if needed_bonus > overrep_penalty:
+                        score += 10000  # Extra boost for net beneficial templates
+                    
+                    # Debug scoring
+                    if needed_bonus > 0:
+                        print(f"      🔄 {template_class.__name__}: score={score}, needed_bonus={needed_bonus}, overrep_penalty={overrep_penalty}")
                     
                     if score > best_score:
                         best_score = score
                         best_templates = [template_class]
-                    elif score == best_score and score > 0:
+                    elif score == best_score:
                         best_templates.append(template_class)
                         
-                except:
+                except Exception as e:
+                    print(f"      ❌ Error scoring {template_class.__name__}: {e}")
                     continue
             
             if best_templates:
-                return random.choice(best_templates)
+                selected = random.choice(best_templates)
+                print(f"    ✅ Selected {selected.__name__} for emergency rebalancing (score: {best_score})")
+                return selected
             else:
+                print(f"    ⚠️ No templates found for emergency rebalancing, using least used")
                 return self.get_least_used_template(perspective)
                 
-        except:
+        except Exception as e:
+            print(f"    ❌ Emergency balance selection failed: {e}")
             return self.get_least_used_template(perspective)
     
     def _score_template_for_coverage(self, template_class, entities_needing_min, relations_needing_min, perspective):
@@ -5408,56 +5499,74 @@ class BalancedTemplateManager:
             return 10  # Small positive score for failed templates
     
     def _score_template_for_strict_enforcement(self, template_class, perspective):
-        """Score template for strict enforcement phase - only allow templates that maintain perfect balance."""
+        """Score template for strict enforcement phase - maintain good balance while allowing generation."""
         try:
             template = template_class(0, datetime.now(), perspective or "first_person")
             _, entities_meta, relations_meta = template.generate()
             
-            score = 5000  # Start with high positive base score
+            score = 1000  # Start with reasonable positive base score
+            helpful_types = 0
+            harmful_types = 0
             
-            # Very strict scoring - heavily penalize any imbalance
+            # Balanced scoring - reward underrepresented types, penalize overrepresented ones
             for _, (entity_type, _) in entities_meta.items():
                 current_usage = self.entity_type_usage.get(entity_type, 0)
                 
-                if current_usage < self.PERFECT_QUOTA_PER_TYPE:
-                    # This type needs more - give bonus based on how much it needs
-                    deficit = self.PERFECT_QUOTA_PER_TYPE - current_usage
-                    score += deficit * 100  # Large bonus for types needing more
+                if current_usage < self.TARGET_QUOTA_PER_TYPE:
+                    # This type needs more - give substantial bonus
+                    deficit = self.TARGET_QUOTA_PER_TYPE - current_usage
+                    score += deficit * 50  # Good bonus for needed types
+                    helpful_types += 1
+                elif current_usage < self.PERFECT_QUOTA_PER_TYPE:
+                    # This type is doing well but could use a bit more
+                    score += 25  # Small bonus
                 elif current_usage < self.MAXIMUM_QUOTA_PER_TYPE:
-                    # This type is acceptable but close to limit - small bonus
-                    remaining_room = self.MAXIMUM_QUOTA_PER_TYPE - current_usage
-                    score += remaining_room * 10
+                    # This type is getting close to limit but still acceptable
+                    score += 10  # Very small bonus
                 else:
-                    # This type is over limit - massive penalty
-                    score -= 10000
+                    # This type is overrepresented - moderate penalty
+                    excess = current_usage - self.MAXIMUM_QUOTA_PER_TYPE
+                    score -= excess * 100  # Graduated penalty based on excess
+                    harmful_types += 1
             
             for rel_type, _, _ in relations_meta:
                 current_usage = self.relation_type_usage.get(rel_type, 0)
                 
-                if current_usage < self.PERFECT_QUOTA_PER_TYPE:
-                    # This type needs more - give bonus based on how much it needs
-                    deficit = self.PERFECT_QUOTA_PER_TYPE - current_usage
-                    score += deficit * 100  # Large bonus for types needing more
+                if current_usage < self.TARGET_QUOTA_PER_TYPE:
+                    # This type needs more - give substantial bonus
+                    deficit = self.TARGET_QUOTA_PER_TYPE - current_usage
+                    score += deficit * 50  # Good bonus for needed types
+                    helpful_types += 1
+                elif current_usage < self.PERFECT_QUOTA_PER_TYPE:
+                    # This type is doing well but could use a bit more
+                    score += 25  # Small bonus
                 elif current_usage < self.MAXIMUM_QUOTA_PER_TYPE:
-                    # This type is acceptable but close to limit - small bonus
-                    remaining_room = self.MAXIMUM_QUOTA_PER_TYPE - current_usage
-                    score += remaining_room * 10
+                    # This type is getting close to limit but still acceptable
+                    score += 10  # Very small bonus
                 else:
-                    # This type is over limit - massive penalty
-                    score -= 10000
+                    # This type is overrepresented - moderate penalty
+                    excess = current_usage - self.MAXIMUM_QUOTA_PER_TYPE
+                    score -= excess * 100  # Graduated penalty based on excess
+                    harmful_types += 1
             
-            # Penalty for overused templates
+            # Template usage balancing - encourage template diversity
             template_usage = self.template_usage_counts[template_class.__name__]
-            if template_usage > 100:
-                score -= 1000  # Heavy penalty for very overused templates
-            elif template_usage > 50:
-                score -= 500   # Moderate penalty for overused templates
+            avg_template_usage = self.target_records // len(self.all_templates) if self.all_templates else 1
             
-            # If score is negative, this template would hurt balance
-            return max(score, -10000)  # Allow negative scores to block harmful templates
+            if template_usage < avg_template_usage:
+                score += 100  # Bonus for underused templates
+            elif template_usage > avg_template_usage * 3:
+                score -= 200  # Penalty for heavily overused templates
+            
+            # Net helpfulness bonus
+            if helpful_types > harmful_types:
+                score += (helpful_types - harmful_types) * 100
+            
+            # Ensure minimum positive score for feasible templates
+            return max(score, 100) if helpful_types >= harmful_types else max(score, 50)
             
         except Exception:
-            return 50  # Small positive score for failed templates
+            return 200  # Reasonable positive score for failed templates
 
     def get_balance_score(self) -> float:
         """Calculate balance score (0-100, where 100 is perfectly balanced)."""
