@@ -10,8 +10,8 @@ def analyze_balance():
     print("🔍 Analyzing Balance Distribution")
     print("=" * 50)
     
-    # Generate a dataset and analyze distribution
-    result = data.generate_balanced_dataset(num_records=200)
+    # Generate a dataset and analyze distribution using improved manager
+    result = data.generate_improved_balanced_dataset(num_records=200)
     dataset = result["dataset"]
     manager = result["metadata"]["balance_manager"]
     

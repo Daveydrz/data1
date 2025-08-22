@@ -4881,6 +4881,7 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
         Pre-validate template to check if it can be used without violating frequency caps.
         
         This is the core fix for Issue #1: Check frequency caps BEFORE template selection.
+        Uses tolerance to avoid being too strict during transition from coverage to balanced phase.
         """
         try:
             # Pre-generate to see what types this template would produce
@@ -4888,19 +4889,33 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
             _, entities_meta, relations_meta = template.generate()
             
             violated_types = []
+            severe_violations = 0
             
             # Check each entity type this template would produce
             for _, (entity_type, _) in entities_meta.items():
-                if self.is_frequency_capped(entity_type, is_entity=True):
-                    violated_types.append(f"E:{entity_type}")
+                current_usage = self.entity_type_usage.get(entity_type, 0)
+                cap = self.get_frequency_cap(entity_type, is_entity=True)
+                
+                if current_usage >= cap:
+                    # Calculate severity of violation
+                    if current_usage >= cap * 2:  # 2x over cap is severe
+                        severe_violations += 1
+                    violated_types.append(f"E:{entity_type}({current_usage}/{cap})")
             
             # Check each relation type this template would produce  
             for rel_type, _, _ in relations_meta:
-                if self.is_frequency_capped(rel_type, is_entity=False):
-                    violated_types.append(f"R:{rel_type}")
+                current_usage = self.relation_type_usage.get(rel_type, 0)
+                cap = self.get_frequency_cap(rel_type, is_entity=False)
+                
+                if current_usage >= cap:
+                    # Calculate severity of violation
+                    if current_usage >= cap * 2:  # 2x over cap is severe
+                        severe_violations += 1
+                    violated_types.append(f"R:{rel_type}({current_usage}/{cap})")
             
-            if violated_types:
-                return False, f"Would violate caps: {', '.join(violated_types[:3])}"
+            # Only reject templates with severe violations or too many minor violations
+            if severe_violations > 0 or len(violated_types) > 5:
+                return False, f"Severe violations: {severe_violations}, total: {len(violated_types)}"
             else:
                 return True, "Template viable"
                 
@@ -5096,8 +5111,19 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
             # More permissive during coverage, but not unlimited
             return max(min_usage * 10, 20)
         else:
-            # Strict 3x rule during balanced phase
-            return min_usage * 3
+            # Gradual 3x rule during balanced phase
+            # Start with more permissive caps and gradually tighten
+            total_types = self.total_entities if is_entity else self.total_relations
+            ideal_per_type = max(1, self.target_records // total_types)
+            
+            # Use the higher of:
+            # 1. 3x the minimum usage
+            # 2. A reasonable per-type distribution
+            strict_3x_cap = min_usage * 3
+            reasonable_cap = max(ideal_per_type, min_usage + 5)
+            
+            # During early balanced phase, be more permissive
+            return max(strict_3x_cap, reasonable_cap)
     
     def calculate_proper_balance_score(self) -> float:
         """
@@ -5325,8 +5351,8 @@ def generate_balanced_dataset(num_records: int = None) -> Dict:
         ThirdPersonEmotionalJourneyTemplate
     ]
     
-    # Initialize balanced template manager
-    manager = BalancedTemplateManager(first_person_templates, third_person_templates)
+    # Initialize improved balanced template manager (fixes critical balance issues)
+    manager = ImprovedBalancedTemplateManager(first_person_templates, third_person_templates)
     
     # Set generation parameters for frequency capping
     manager.set_generation_parameters(num_records, "coverage")
