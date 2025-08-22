@@ -4928,48 +4928,31 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
     
     def get_balanced_template_selection(self, perspective: str) -> object:
         """
-        Enhanced template selection with strict rotation and frequency cap pre-validation.
+        Enhanced template selection that focuses on balance without being too restrictive.
         
-        This fixes Issue #3: Template over-usage problem.
+        Instead of rejecting templates, use scoring to prefer balanced choices.
         """
         if perspective == "first_person":
             templates = self.first_person_templates
-            rotation_key = "first_person"
         elif perspective == "third_person":
             templates = self.third_person_templates  
-            rotation_key = "third_person"
         else:
             templates = self.all_templates
-            rotation_key = "all"
         
-        # Phase 1: Coverage phase - prioritize coverage over balance
-        if self.generation_phase == "coverage":
-            # In coverage phase, use rotation without strict frequency caps
-            # This ensures we achieve full coverage first
-            return self._get_rotation_template(templates, rotation_key)
-        else:
-            # Phase 2: Balanced phase - strict frequency cap pre-validation
-            viable_templates = []
-            
-            for template_class in templates:
-                is_viable, reason = self.is_template_viable(template_class, perspective)
-                if is_viable:
-                    viable_templates.append(template_class)
-            
-            if not viable_templates:
-                # Emergency fallback: Find least violating template instead of giving up
-                print(f"   ⚠️  All templates violate 3x rule for {perspective}, selecting least violating")
-                return self._select_least_violating_template(templates, perspective)
-            
-            # Score viable templates based on need
-            template_scores = {}
-            for template_class in viable_templates:
-                score = self._calculate_template_need_score(template_class, perspective)
-                template_scores[template_class] = score
-            
-            # Select template with highest need score
+        # For now, focus on scoring rather than rejecting templates
+        # This avoids the "all templates violate" issue
+        template_scores = {}
+        
+        for template_class in templates:
+            score = self._calculate_template_need_score(template_class, perspective)
+            template_scores[template_class] = score
+        
+        # Select template with highest need score
+        if template_scores:
             best_template = max(template_scores.keys(), key=lambda t: template_scores[t])
             return best_template
+        else:
+            return self.get_least_used_template(perspective)
     
     def _select_least_violating_template(self, templates: List, perspective: str) -> object:
         """
@@ -5044,24 +5027,43 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
             
             score = 0
             
-            # Score based on entity type needs
+            # Get current statistics for adaptive scoring
+            entity_counts = [c for c in self.entity_type_usage.values() if c > 0]
+            relation_counts = [c for c in self.relation_type_usage.values() if c > 0]
+            
+            entity_avg = sum(entity_counts) / len(entity_counts) if entity_counts else 1
+            relation_avg = sum(relation_counts) / len(relation_counts) if relation_counts else 1
+            
+            # Score based on entity type needs with heavy penalties for overused types
             for _, (entity_type, _) in entities_meta.items():
                 current_usage = self.entity_type_usage.get(entity_type, 0)
-                score += self._get_type_priority_score(current_usage, is_entity=True)
+                priority_score = self._get_type_priority_score(current_usage, is_entity=True)
+                
+                # Extra penalty for the most commonly overused types
+                if entity_type in ['PERSON', 'PRONOUN', 'CONCEPT'] and current_usage > entity_avg * 2:
+                    priority_score *= 0.1  # Heavy penalty for overused common types
+                
+                score += priority_score
             
-            # Score based on relation type needs  
+            # Score based on relation type needs with heavy penalties for overused types
             for rel_type, _, _ in relations_meta:
                 current_usage = self.relation_type_usage.get(rel_type, 0)
-                score += self._get_type_priority_score(current_usage, is_entity=False)
+                priority_score = self._get_type_priority_score(current_usage, is_entity=False)
+                
+                # Extra penalty for the most commonly overused relations
+                if rel_type in ['RESULTS_IN', 'AT_LOCATION', 'USES'] and current_usage > relation_avg * 2:
+                    priority_score *= 0.1  # Heavy penalty for overused common relations
+                
+                score += priority_score
             
-            # Penalty for template overuse
+            # Penalty for template overuse (more aggressive)
             template_usage = self.template_usage_counts[template_class.__name__]
-            if template_usage > 50:
-                score *= 0.1  # Heavy penalty
-            elif template_usage > 20:
-                score *= 0.3  # Moderate penalty
+            if template_usage > 20:
+                score *= 0.01  # Very heavy penalty for heavily used templates
             elif template_usage > 10:
-                score *= 0.7  # Light penalty
+                score *= 0.1   # Heavy penalty
+            elif template_usage > 5:
+                score *= 0.5   # Moderate penalty
             
             return score
             
@@ -5069,7 +5071,7 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
             return 0.1  # Low score for failing templates
     
     def _get_type_priority_score(self, current_usage: int, is_entity: bool) -> float:
-        """Get priority score for a type based on current usage."""
+        """Get priority score for a type based on current usage with aggressive balancing."""
         usage_dict = self.entity_type_usage if is_entity else self.relation_type_usage
         used_counts = [count for count in usage_dict.values() if count > 0]
         
@@ -5077,17 +5079,26 @@ class ImprovedBalancedTemplateManager(BalancedTemplateManager):
             return 1000.0 if current_usage == 0 else 100.0
         
         min_usage = min(used_counts)
+        max_usage = max(used_counts)
+        avg_usage = sum(used_counts) / len(used_counts)
         
+        # Much more aggressive scoring for balance
         if current_usage == 0:
-            return 10000.0  # Highest priority for uncovered
+            return 100000.0  # Extremely high priority for uncovered
         elif current_usage <= min_usage:
-            return 5000.0   # High priority for minimum usage
-        elif current_usage <= min_usage * 2:
-            return 1000.0   # Medium priority
+            return 50000.0   # Very high priority for minimum usage
+        elif current_usage <= min_usage + 1:
+            return 25000.0   # High priority for near minimum
+        elif current_usage < avg_usage * 0.5:
+            return 10000.0   # High priority for below half average
+        elif current_usage < avg_usage:
+            return 5000.0    # Medium priority for below average
+        elif current_usage <= avg_usage * 1.5:
+            return 1000.0    # Lower priority for around average
         elif current_usage <= min_usage * 3:
-            return 100.0    # Low priority (at 3x limit)
+            return 100.0     # Low priority (at 3x limit)
         else:
-            return 1.0      # Very low priority (over 3x limit)
+            return 1.0       # Very low priority (over 3x limit)
     
     def get_frequency_cap(self, type_name: str, is_entity: bool = True) -> int:
         """
