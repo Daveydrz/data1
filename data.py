@@ -5089,14 +5089,22 @@ class BalancedTemplateManager:
             entity_ratio = max_entity / min_entity if min_entity > 0 else float('inf')
             relation_ratio = max_relation / min_relation if min_relation > 0 else float('inf')
             
-            # ABSOLUTE PERFECT BALANCE ENFORCER: Trigger for 100% balance target
-            # User requires 70-100% balance, so trigger at extremely low ratios
-            absolute_balance_threshold = 1.2  # Trigger at 1.2:1 ratio for near-perfect balance
+            # MATHEMATICAL PERFECT BALANCE ENFORCER
+            # User requires 70-100% balance, which means max 1.43:1 ratio (70% = 1/1.43)
+            perfect_balance_target = 1.43  # 70% balance = 1/1.43 ratio
             
-            if entity_ratio > absolute_balance_threshold or relation_ratio > absolute_balance_threshold:
-                print(f"🚨 ABSOLUTE PERFECT BALANCE ENFORCER: Entity ratio {entity_ratio:.1f}:1, Relation ratio {relation_ratio:.1f}:1")
-                print(f"    🎯 Target: 100% balance (user requirement: 70-100% minimum)")
-                return self._emergency_balance_selection(templates, perspective)
+            if entity_ratio > perfect_balance_target or relation_ratio > perfect_balance_target:
+                print(f"🚨 MATHEMATICAL PERFECT BALANCE ENFORCER: Entity ratio {entity_ratio:.1f}:1, Relation ratio {relation_ratio:.1f}:1")
+                print(f"    🎯 Target: ≤{perfect_balance_target:.1f}:1 ratio for 70%+ balance")
+                
+                # Calculate ideal target counts for perfect balance
+                total_entities = sum(self.entity_type_usage.values())
+                total_relations = sum(self.relation_type_usage.values())
+                
+                ideal_entity_count = total_entities / len(self.entity_type_usage) if self.entity_type_usage else 0
+                ideal_relation_count = total_relations / len(self.relation_type_usage) if self.relation_type_usage else 0
+                
+                return self._mathematical_balance_selection(templates, perspective, ideal_entity_count, ideal_relation_count)
         
         # Normal four-phase system
         entities_needing_min, relations_needing_min = self.get_types_needing_minimum_quota()
@@ -5353,6 +5361,92 @@ class BalancedTemplateManager:
         except Exception as e:
             print(f"    ❌ Emergency balance selection failed: {e}")
             return self.get_least_used_template(perspective)
+    
+    def _mathematical_balance_selection(self, templates, perspective, ideal_entity_count, ideal_relation_count):
+        """Forced perfect balance system that only allows templates improving balance."""
+        try:
+            print(f"    🎯 FORCED PERFECT BALANCE: Only allowing balance-improving templates")
+            
+            # Get current max counts (the problematic overrepresented types)
+            entity_counts = {et: count for et, count in self.entity_type_usage.items()}
+            relation_counts = {rt: count for rt, count in self.relation_type_usage.items()}
+            
+            max_entity_count = max(entity_counts.values()) if entity_counts else 0
+            max_relation_count = max(relation_counts.values()) if relation_counts else 0
+            
+            # Find the most overrepresented types (the ones causing imbalance)
+            max_entities = [et for et, count in entity_counts.items() if count == max_entity_count]
+            max_relations = [rt for rt, count in relation_counts.items() if count == max_relation_count]
+            
+            print(f"       Max entity count: {max_entity_count} (types: {max_entities[:3]})")  
+            print(f"       Max relation count: {max_relation_count} (types: {max_relations[:3]})")
+            
+            # Find severely underrepresented types (bottom 20%)
+            sorted_entities = sorted(entity_counts.items(), key=lambda x: x[1])
+            sorted_relations = sorted(relation_counts.items(), key=lambda x: x[1])
+            
+            bottom_20_percent_entities = int(len(sorted_entities) * 0.2)
+            bottom_20_percent_relations = int(len(sorted_relations) * 0.2)
+            
+            lowest_entities = [et for et, _ in sorted_entities[:bottom_20_percent_entities]]
+            lowest_relations = [rt for rt, _ in sorted_relations[:bottom_20_percent_relations]]
+            
+            print(f"       Bottom 20% entities: {[(et, entity_counts[et]) for et in lowest_entities[:5]]}")
+            print(f"       Bottom 20% relations: {[(rt, relation_counts[rt]) for rt in lowest_relations[:5]]}")
+            
+            # FORCED BALANCE: Only consider templates that help lowest types WITHOUT adding to highest types
+            balance_improving_templates = []
+            
+            for template_class in templates:
+                try:
+                    template = template_class(0, datetime.now(), perspective or "first_person")
+                    _, entities_meta, relations_meta = template.generate()
+                    
+                    helps_lowest = False
+                    hurts_balance = False
+                    help_score = 0
+                    
+                    # Check if template helps lowest types
+                    for _, (entity_type, _) in entities_meta.items():
+                        if entity_type in lowest_entities:
+                            helps_lowest = True
+                            help_score += 1000 / (entity_counts[entity_type] + 1)  # More help for lower counts
+                        elif entity_type in max_entities:
+                            hurts_balance = True  # Makes imbalance worse
+                    
+                    for rel_type, _, _ in relations_meta:
+                        if rel_type in lowest_relations:
+                            helps_lowest = True
+                            help_score += 1000 / (relation_counts[rel_type] + 1)  # More help for lower counts
+                        elif rel_type in max_relations:
+                            hurts_balance = True  # Makes imbalance worse
+                    
+                    # ONLY ALLOW templates that help without hurting balance
+                    if helps_lowest and not hurts_balance:
+                        balance_improving_templates.append((template_class, help_score))
+                        print(f"      ✅ {template_class.__name__}: helps lowest types (score: {help_score:.1f})")
+                    elif helps_lowest and hurts_balance:
+                        print(f"      ⚠️ {template_class.__name__}: helps but also hurts balance - REJECTED")
+                    
+                except Exception as e:
+                    continue
+            
+            if balance_improving_templates:
+                # Select the template that helps the most
+                balance_improving_templates.sort(key=lambda x: x[1], reverse=True)
+                selected = balance_improving_templates[0][0]
+                best_score = balance_improving_templates[0][1]
+                print(f"    ✅ FORCED BALANCE selected {selected.__name__} (help_score: {best_score:.1f})")
+                return selected
+            else:
+                print(f"    ❌ NO BALANCE-IMPROVING TEMPLATES FOUND!")
+                print(f"    🔄 All templates either don't help lowest types or hurt balance")
+                print(f"    🆘 Falling back to emergency selection")
+                return self._emergency_balance_selection(templates, perspective)
+                
+        except Exception as e:
+            print(f"    ❌ Forced balance selection failed: {e}")
+            return self._emergency_balance_selection(templates, perspective)
     
     def _score_template_for_coverage(self, template_class, entities_needing_min, relations_needing_min, perspective):
         """Score template for coverage phase - prioritize templates that produce types needing minimum quota."""
